@@ -1,0 +1,17 @@
+[package]
+name = "bounty_registry"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["lib", "cdylib"]
+doctest = false
+
+[dependencies]
+soroban-sdk = { workspace = true }
+core_escrow = { path = "../core_escrow" }
+reputation_registry = { path = "../reputation_registry" }
+
+[dev-dependencies]
+soroban-sdk = { workspace = true, features = ["testutils"] }
