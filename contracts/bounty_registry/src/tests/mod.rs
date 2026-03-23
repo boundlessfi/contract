@@ -17,8 +17,10 @@ fn test_bounty_lifecycle() {
 
     // 2. Initialize Core Escrow
     let admin = Address::generate(&env);
+    let fee_account = Address::generate(&env);
+    let treasury = Address::generate(&env);
     let escrow_client = CoreEscrowClient::new(&env, &core_escrow_id);
-    escrow_client.init_core_escrow(&admin);
+    escrow_client.init_core_escrow(&admin, &fee_account, &treasury);
 
     // 3. Initialize Reputation Registry
     let rep_client = ReputationRegistryClient::new(&env, &rep_reg_id);
@@ -105,7 +107,9 @@ fn test_bounty_cancellation() {
     let bounty_reg_id = env.register(BountyRegistry, ());
 
     let admin = Address::generate(&env);
-    CoreEscrowClient::new(&env, &core_escrow_id).init_core_escrow(&admin);
+    let fee_account = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    CoreEscrowClient::new(&env, &core_escrow_id).init_core_escrow(&admin, &fee_account, &treasury);
     ReputationRegistryClient::new(&env, &rep_reg_id).init_reputation_reg(&admin);
 
     let bounty_client = BountyRegistryClient::new(&env, &bounty_reg_id);
@@ -151,7 +155,9 @@ fn test_update_bounty() {
     let bounty_reg_id = env.register(BountyRegistry, ());
 
     let admin = Address::generate(&env);
-    CoreEscrowClient::new(&env, &core_escrow_id).init_core_escrow(&admin);
+    let fee_account = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    CoreEscrowClient::new(&env, &core_escrow_id).init_core_escrow(&admin, &fee_account, &treasury);
     ReputationRegistryClient::new(&env, &rep_reg_id).init_reputation_reg(&admin);
 
     let bounty_client = BountyRegistryClient::new(&env, &bounty_reg_id);

@@ -7,6 +7,8 @@ pub enum DataKey {
     ReleaseSlot(BytesN<32>, u32), // (pool_id, index)
     InsuranceFund,
     Admin,
+    FeeAccount,
+    Treasury,
 }
 
 #[contracttype]

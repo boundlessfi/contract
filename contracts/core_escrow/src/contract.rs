@@ -10,13 +10,144 @@ pub struct CoreEscrow;
 
 #[contractimpl]
 impl CoreEscrow {
-    pub fn init_core_escrow(env: Env, admin: Address) -> Result<(), Error> {
+    pub fn init_core_escrow(
+        env: Env,
+        admin: Address,
+        fee_account: Address,
+        treasury: Address,
+    ) -> Result<(), Error> {
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(Error::AlreadyInitialized);
         }
+
+        if Self::is_zero_address(&env, &admin) {
+            panic!("admin cannot be zero address");
+        }
+        if Self::is_zero_address(&env, &fee_account) {
+            panic!("fee account cannot be zero address");
+        }
+        if Self::is_zero_address(&env, &treasury) {
+            panic!("treasury cannot be zero address");
+        }
+
         env.storage().instance().set(&DataKey::Admin, &admin);
+        env.storage()
+            .instance()
+            .set(&DataKey::FeeAccount, &fee_account);
+        env.storage().instance().set(&DataKey::Treasury, &treasury);
+
         Ok(())
     }
+
+    // ========================================
+    // QUERY FUNCTIONS
+    // ========================================
+
+    pub fn get_admin(env: Env) -> Result<Address, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)
+    }
+
+    pub fn get_fee_account(env: Env) -> Result<Address, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::FeeAccount)
+            .ok_or(Error::NotInitialized)
+    }
+
+    pub fn get_treasury(env: Env) -> Result<Address, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Treasury)
+            .ok_or(Error::NotInitialized)
+    }
+
+    pub fn get_pool(env: Env, pool_id: BytesN<32>) -> Result<EscrowPool, Error> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::EscrowPool(pool_id))
+            .ok_or(Error::PoolNotFound)
+    }
+
+    pub fn get_slot(env: Env, pool_id: BytesN<32>, index: u32) -> Result<ReleaseSlot, Error> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ReleaseSlot(pool_id, index))
+            .ok_or(Error::SlotNotFound)
+    }
+
+    pub fn get_all_milestones(env: Env, pool_id: BytesN<32>) -> Result<Vec<ReleaseSlot>, Error> {
+        let mut milestones = Vec::new(&env);
+        let mut index = 0;
+        loop {
+            let key = DataKey::ReleaseSlot(pool_id.clone(), index);
+            if let Some(slot) = env.storage().persistent().get(&key) {
+                milestones.push_back(slot);
+                index += 1;
+            } else {
+                break;
+            }
+        }
+        Ok(milestones)
+    }
+
+    // ========================================
+    // ADMINISTRATIVE FUNCTIONS
+    // ========================================
+
+    pub fn update_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+        let admin = Self::get_admin(env.clone())?;
+        admin.require_auth();
+
+        if Self::is_zero_address(&env, &new_admin) {
+            panic!("new admin cannot be zero address");
+        }
+
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        Ok(())
+    }
+
+    pub fn update_fee_account(env: Env, new_fee_account: Address) -> Result<(), Error> {
+        let admin = Self::get_admin(env.clone())?;
+        admin.require_auth();
+
+        if Self::is_zero_address(&env, &new_fee_account) {
+            panic!("new fee account cannot be zero address");
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::FeeAccount, &new_fee_account);
+        Ok(())
+    }
+
+    pub fn update_treasury(env: Env, new_treasury: Address) -> Result<(), Error> {
+        let admin = Self::get_admin(env.clone())?;
+        admin.require_auth();
+
+        if Self::is_zero_address(&env, &new_treasury) {
+            panic!("new treasury cannot be zero address");
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::Treasury, &new_treasury);
+        Ok(())
+    }
+
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
+        let admin = Self::get_admin(env.clone())?;
+        admin.require_auth();
+
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+        Ok(())
+    }
+
+    // ========================================
+    // CORE ESCROW FUNCTIONS
+    // ========================================
 
     pub fn create_pool(
         env: Env,
@@ -329,5 +460,17 @@ impl CoreEscrow {
 
     pub fn refund_remaining(env: Env, pool_id: BytesN<32>) -> Result<(), Error> {
         Self::refund_all(env, pool_id)
+    }
+
+    // ========================================
+    // INTERNAL HELPER FUNCTIONS
+    // ========================================
+
+    fn is_zero_address(_env: &Env, _address: &Address) -> bool {
+        // In Soroban, there isn't a native "zero address" like EVM.
+        // We can check if it's a specific placeholder if needed,
+        // but often 'require_auth' is sufficient for security.
+        // This is a placeholder implementation as requested.
+        false
     }
 }

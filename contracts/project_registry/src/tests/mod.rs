@@ -12,7 +12,9 @@ fn test_project_lifecycle() {
     let esc_id = env.register(CoreEscrow, ());
     let esc_client = CoreEscrowClient::new(&env, &esc_id);
     let admins = Address::generate(&env);
-    esc_client.init_core_escrow(&admins);
+    let fee_account = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    esc_client.init_core_escrow(&admins, &fee_account, &treasury);
 
     let proj_reg_id = env.register(ProjectRegistry, ());
     let client = ProjectRegistryClient::new(&env, &proj_reg_id);

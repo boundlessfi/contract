@@ -12,10 +12,12 @@ fn test_crowdfund_full_lifecycle() {
 
     // 1. Setup ecosystem
     let admins = Address::generate(&env);
+    let fee_account = Address::generate(&env);
+    let treasury = Address::generate(&env);
 
     let esc_id = env.register(CoreEscrow, ());
     let esc_client = CoreEscrowClient::new(&env, &esc_id);
-    esc_client.init_core_escrow(&admins);
+    esc_client.init_core_escrow(&admins, &fee_account, &treasury);
 
     let rep_id = env.register(ReputationRegistry, ());
     let rep_client = ReputationRegistryClient::new(&env, &rep_id);
