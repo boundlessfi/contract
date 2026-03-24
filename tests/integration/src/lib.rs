@@ -11,3 +11,5 @@ mod test_grant_e2e;
 mod test_hackathon_e2e;
 #[cfg(test)]
 mod test_cross_module;
+#[cfg(test)]
+mod test_new_features;
