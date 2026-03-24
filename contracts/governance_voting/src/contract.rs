@@ -116,7 +116,7 @@ impl GovernanceVoting {
 
         let session = VotingSession {
             session_id: session_id.clone(),
-            context: context.clone(),
+            context,
             module_id,
             created_at: env.ledger().timestamp(),
             start_at,

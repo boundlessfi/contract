@@ -196,7 +196,7 @@ impl ReputationRegistry {
         let mut profile = Self::get_or_create_profile(&env, &contributor);
 
         profile.overall_score = profile.overall_score.saturating_add(points);
-        let current = profile.category_scores.get(category.clone()).unwrap_or(0);
+        let current = profile.category_scores.get(category).unwrap_or(0);
         profile
             .category_scores
             .set(category, current.saturating_add(points));
@@ -627,7 +627,7 @@ impl ReputationRegistry {
             return 0;
         }
         let mut x = n;
-        let mut y = (x + 1) / 2;
+        let mut y = x.div_ceil(2);
         while y < x {
             x = y;
             y = (x + n / x) / 2;

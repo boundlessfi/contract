@@ -10,7 +10,7 @@ use crate::setup::{setup_platform, Platform};
 use boundless_types::ActivityCategory;
 use bounty_registry::storage::{BountyStatus, BountyType};
 use crowdfund_registry::storage::{CampaignStatus, MilestoneStatus};
-use grant_hub::storage::{GrantStatus, GrantType};
+use grant_hub::storage::GrantStatus;
 use hackathon_registry::storage::HackathonStatus;
 use soroban_sdk::testutils::{Address as _, Ledger};
 use soroban_sdk::{Address, String, Vec};
@@ -644,7 +644,7 @@ fn test_cancel_completed_grant_fails() {
 fn test_route_payout_wrapper() {
     let p = setup_platform();
     let owner = Address::generate(&p.env);
-    let recipient = Address::generate(&p.env);
+    let _recipient = Address::generate(&p.env);
 
     p.sac.mint(&owner, &50_000);
 

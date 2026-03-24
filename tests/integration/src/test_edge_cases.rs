@@ -284,7 +284,7 @@ fn test_qf_multi_donor_distribution() {
     // Total should equal matching pool (within rounding tolerance of integer division)
     let total = bal_a + bal_b + bal_c;
     assert!(
-        total >= 29_990 && total <= 30_000,
+        (29_990..=30_000).contains(&total),
         "Total {total} should be ~30000"
     );
 

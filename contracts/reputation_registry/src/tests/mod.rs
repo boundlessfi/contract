@@ -1,5 +1,3 @@
-#![cfg(test)]
-
 use crate::contract::{ReputationRegistry, ReputationRegistryClient};
 use boundless_types::ActivityCategory;
 use soroban_sdk::testutils::{Address as _, Ledger};

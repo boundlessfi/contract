@@ -130,7 +130,7 @@ impl CrowdfundRegistry {
 
         // Validate milestones: count 2-10, sum of pcts = 10000
         let ms_count = milestone_descs.len();
-        if ms_count < 2 || ms_count > 10 {
+        if !(2..=10).contains(&ms_count) {
             return Err(Error::InvalidMilestones);
         }
         let mut pct_sum: u32 = 0;
@@ -710,7 +710,7 @@ impl CrowdfundRegistry {
         }
 
         let batch_idx = campaign.refund_progress;
-        let total_batches = (campaign.backer_count + BACKER_BATCH_SIZE - 1) / BACKER_BATCH_SIZE;
+        let total_batches = campaign.backer_count.div_ceil(BACKER_BATCH_SIZE);
         if batch_idx >= total_batches {
             return Err(Error::RefundBatchDone);
         }

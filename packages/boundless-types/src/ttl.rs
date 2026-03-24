@@ -5,9 +5,7 @@
 /// | Instance   | Admin, fee configs, contract addrs, counters | 120 days     |
 /// | Persistent | Bounties, campaigns, profiles, pools        | 600 days     |
 /// | Temporary  | Refund progress, session cache              | 7 days       |
-
 // Ledger close cadence: ~5 seconds → ~17_280 ledgers/day
-
 /// Instance storage: extend when remaining TTL drops below this
 pub const INSTANCE_TTL_THRESHOLD: u32 = 120 * 17_280; // ~120 days
 /// Instance storage: extend to this TTL

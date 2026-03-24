@@ -184,7 +184,7 @@ fn test_qf_logic() {
 
 #[test]
 fn test_cancel_session() {
-    let (env, client, admin, module) = setup_env();
+    let (env, client, _admin, module) = setup_env();
 
     let start = env.ledger().timestamp();
     let end = start + 1000;

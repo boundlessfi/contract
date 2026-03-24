@@ -1,0 +1,233 @@
+name: Deploy Contracts
+
+on:
+  workflow_dispatch:
+    inputs:
+      network:
+        description: "Target network"
+        required: true
+        type: choice
+        options:
+          - testnet
+          - mainnet
+      action:
+        description: "Deploy action"
+        required: true
+        type: choice
+        options:
+          - fresh-deploy
+          - upgrade-all
+          - upgrade-single
+      contract:
+        description: "Contract to upgrade (only for upgrade-single)"
+        required: false
+        type: choice
+        options:
+          - core_escrow
+          - reputation_registry
+          - governance_voting
+          - project_registry
+          - bounty_registry
+          - crowdfund_registry
+          - grant_hub
+          - hackathon_registry
+
+env:
+  CARGO_TERM_COLOR: always
+  WASM_DIR: target/wasm32v1-none/release
+
+jobs:
+  # ──────────────────────────────────────────────────────
+  # Build WASM artifacts
+  # ──────────────────────────────────────────────────────
+  build:
+    name: Build WASM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-deploy-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install Stellar CLI
+        run: cargo install --locked stellar-cli
+
+      - name: Build all contracts
+        run: stellar contract build
+
+      - name: Verify WASM sizes
+        run: |
+          for wasm in $WASM_DIR/*.wasm; do
+            NAME=$(basename "$wasm")
+            SIZE=$(stat -c%s "$wasm" 2>/dev/null || stat -f%z "$wasm")
+            if [ "$SIZE" -gt 65536 ]; then
+              echo "FAIL: $NAME exceeds 64KB ($((SIZE/1024))KB)"
+              exit 1
+            fi
+            echo "OK: $NAME — $((SIZE/1024))KB"
+          done
+
+      - name: Run all tests
+        run: cargo test --workspace
+
+      - name: Upload WASM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-contracts
+          path: target/wasm32v1-none/release/*.wasm
+
+  # ──────────────────────────────────────────────────────
+  # Fresh deploy — all 8 contracts from scratch
+  # ──────────────────────────────────────────────────────
+  fresh-deploy:
+    name: Fresh Deploy
+    needs: build
+    if: inputs.action == 'fresh-deploy'
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.network }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Stellar CLI
+        run: cargo install --locked stellar-cli
+
+      - name: Download WASM artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-contracts
+          path: ${{ env.WASM_DIR }}
+
+      - name: Run deploy script
+        env:
+          ADMIN_SECRET: ${{ secrets.ADMIN_SECRET }}
+          TREASURY_ADDRESS: ${{ secrets.TREASURY_ADDRESS }}
+        run: |
+          chmod +x scripts/deploy.sh
+          ./scripts/deploy.sh ${{ inputs.network }} | tee deploy-output.txt
+
+      - name: Extract contract addresses
+        id: addresses
+        run: |
+          extract() { grep "$1:" deploy-output.txt | awk '{print $NF}'; }
+          echo "core_escrow=$(extract CoreEscrow)" >> "$GITHUB_OUTPUT"
+          echo "reputation_registry=$(extract ReputationRegistry)" >> "$GITHUB_OUTPUT"
+          echo "governance_voting=$(extract GovernanceVoting)" >> "$GITHUB_OUTPUT"
+          echo "project_registry=$(extract ProjectRegistry)" >> "$GITHUB_OUTPUT"
+          echo "bounty_registry=$(extract BountyRegistry)" >> "$GITHUB_OUTPUT"
+          echo "crowdfund_registry=$(extract CrowdfundRegistry)" >> "$GITHUB_OUTPUT"
+          echo "grant_hub=$(extract GrantHub)" >> "$GITHUB_OUTPUT"
+          echo "hackathon_registry=$(extract HackathonRegistry)" >> "$GITHUB_OUTPUT"
+
+      - name: Save deployment manifest
+        run: |
+          cat > deployment-manifest.json <<EOF
+          {
+            "network": "${{ inputs.network }}",
+            "deployed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "commit": "${{ github.sha }}",
+            "contracts": {
+              "core_escrow": "${{ steps.addresses.outputs.core_escrow }}",
+              "reputation_registry": "${{ steps.addresses.outputs.reputation_registry }}",
+              "governance_voting": "${{ steps.addresses.outputs.governance_voting }}",
+              "project_registry": "${{ steps.addresses.outputs.project_registry }}",
+              "bounty_registry": "${{ steps.addresses.outputs.bounty_registry }}",
+              "crowdfund_registry": "${{ steps.addresses.outputs.crowdfund_registry }}",
+              "grant_hub": "${{ steps.addresses.outputs.grant_hub }}",
+              "hackathon_registry": "${{ steps.addresses.outputs.hackathon_registry }}"
+            }
+          }
+          EOF
+          cat deployment-manifest.json
+
+      - name: Upload deployment manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-manifest-${{ inputs.network }}
+          path: deployment-manifest.json
+          retention-days: 90
+
+  # ──────────────────────────────────────────────────────
+  # Upgrade all contracts
+  # ──────────────────────────────────────────────────────
+  upgrade-all:
+    name: Upgrade All Contracts
+    needs: build
+    if: inputs.action == 'upgrade-all'
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.network }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Stellar CLI
+        run: cargo install --locked stellar-cli
+
+      - name: Download WASM artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-contracts
+          path: ${{ env.WASM_DIR }}
+
+      - name: Run upgrade script
+        env:
+          ADMIN_SECRET: ${{ secrets.ADMIN_SECRET }}
+          NETWORK: ${{ inputs.network }}
+          # Contract addresses from GitHub environment variables
+          CORE_ESCROW_ID: ${{ vars.CORE_ESCROW_ID }}
+          REPUTATION_REGISTRY_ID: ${{ vars.REPUTATION_REGISTRY_ID }}
+          GOVERNANCE_VOTING_ID: ${{ vars.GOVERNANCE_VOTING_ID }}
+          PROJECT_REGISTRY_ID: ${{ vars.PROJECT_REGISTRY_ID }}
+          BOUNTY_REGISTRY_ID: ${{ vars.BOUNTY_REGISTRY_ID }}
+          CROWDFUND_REGISTRY_ID: ${{ vars.CROWDFUND_REGISTRY_ID }}
+          GRANT_HUB_ID: ${{ vars.GRANT_HUB_ID }}
+          HACKATHON_REGISTRY_ID: ${{ vars.HACKATHON_REGISTRY_ID }}
+        run: |
+          chmod +x scripts/upgrade.sh
+          ./scripts/upgrade.sh all
+
+  # ──────────────────────────────────────────────────────
+  # Upgrade a single contract
+  # ──────────────────────────────────────────────────────
+  upgrade-single:
+    name: Upgrade ${{ inputs.contract }}
+    needs: build
+    if: inputs.action == 'upgrade-single'
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.network }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Stellar CLI
+        run: cargo install --locked stellar-cli
+
+      - name: Download WASM artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-contracts
+          path: ${{ env.WASM_DIR }}
+
+      - name: Run upgrade script
+        env:
+          ADMIN_SECRET: ${{ secrets.ADMIN_SECRET }}
+          NETWORK: ${{ inputs.network }}
+          CORE_ESCROW_ID: ${{ vars.CORE_ESCROW_ID }}
+          REPUTATION_REGISTRY_ID: ${{ vars.REPUTATION_REGISTRY_ID }}
+          GOVERNANCE_VOTING_ID: ${{ vars.GOVERNANCE_VOTING_ID }}
+          PROJECT_REGISTRY_ID: ${{ vars.PROJECT_REGISTRY_ID }}
+          BOUNTY_REGISTRY_ID: ${{ vars.BOUNTY_REGISTRY_ID }}
+          CROWDFUND_REGISTRY_ID: ${{ vars.CROWDFUND_REGISTRY_ID }}
+          GRANT_HUB_ID: ${{ vars.GRANT_HUB_ID }}
+          HACKATHON_REGISTRY_ID: ${{ vars.HACKATHON_REGISTRY_ID }}
+        run: |
+          chmod +x scripts/upgrade.sh
+          ./scripts/upgrade.sh ${{ inputs.contract }}

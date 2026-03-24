@@ -1,5 +1,3 @@
-#![cfg(test)]
-
 use crate::contract::{BountyRegistry, BountyRegistryClient};
 use crate::storage::{BountyStatus, BountyType};
 use boundless_types::ActivityCategory;

@@ -1,5 +1,3 @@
-#![cfg(test)]
-
 use crate::contract::{CoreEscrow, CoreEscrowClient};
 use boundless_types::{ModuleType, SubType};
 use soroban_sdk::testutils::Address as _;

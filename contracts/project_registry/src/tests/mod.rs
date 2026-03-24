@@ -27,7 +27,7 @@ fn test_register_and_query() {
     assert_eq!(project.dispute_count, 0);
     assert_eq!(project.missed_milestones, 0);
     assert_eq!(project.warning_level, 0);
-    assert_eq!(project.suspended, false);
+    assert!(!project.suspended);
 
     // Register a second project
     let owner2 = Address::generate(&env);
@@ -76,17 +76,17 @@ fn test_validate_budget() {
     let pid = client.register_project(&owner, &String::from_str(&env, "ipfs://meta"));
 
     // Level 0: max 2000
-    assert_eq!(client.validate_budget(&pid, &2000), true);
-    assert_eq!(client.validate_budget(&pid, &2001), false);
+    assert!(client.validate_budget(&pid, &2000));
+    assert!(!client.validate_budget(&pid, &2001));
 
     // Upgrade to Level 1: max 10000
     client.upgrade_verification(&pid, &1);
-    assert_eq!(client.validate_budget(&pid, &10000), true);
-    assert_eq!(client.validate_budget(&pid, &10001), false);
+    assert!(client.validate_budget(&pid, &10000));
+    assert!(!client.validate_budget(&pid, &10001));
 
     // Upgrade to Level 2: unlimited
     client.upgrade_verification(&pid, &2);
-    assert_eq!(client.validate_budget(&pid, &999_999), true);
+    assert!(client.validate_budget(&pid, &999_999));
 }
 
 #[test]
@@ -135,15 +135,15 @@ fn test_suspend_project() {
     let owner = Address::generate(&env);
     let pid = client.register_project(&owner, &String::from_str(&env, "ipfs://meta"));
 
-    assert_eq!(client.is_suspended(&pid), false);
+    assert!(!client.is_suspended(&pid));
 
     client.suspend_project(&pid);
-    assert_eq!(client.is_suspended(&pid), true);
+    assert!(client.is_suspended(&pid));
 
     let project = client.get_project(&pid);
-    assert_eq!(project.suspended, true);
+    assert!(project.suspended);
 
     // Unsuspend
     client.unsuspend_project(&pid);
-    assert_eq!(client.is_suspended(&pid), false);
+    assert!(!client.is_suspended(&pid));
 }

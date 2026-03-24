@@ -1,5 +1,3 @@
-#![cfg(test)]
-
 use crate::contract::{GrantHub, GrantHubClient};
 use crate::storage::{GrantStatus, GrantType, MilestoneStatus};
 use core_escrow::{CoreEscrow, CoreEscrowClient};

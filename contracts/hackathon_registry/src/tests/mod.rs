@@ -1,5 +1,3 @@
-#![cfg(test)]
-
 use crate::contract::{HackathonRegistry, HackathonRegistryClient};
 use crate::storage::HackathonStatus;
 use core_escrow::{CoreEscrow, CoreEscrowClient};

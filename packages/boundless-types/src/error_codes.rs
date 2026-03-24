@@ -15,7 +15,6 @@
 ///   800-899:  CrowdfundRegistry
 ///   900-999:  GrantHub
 ///   1000-1099: HackathonRegistry
-
 // Shared error codes
 pub const ERR_NOT_INITIALIZED: u32 = 1;
 pub const ERR_ALREADY_INITIALIZED: u32 = 2;

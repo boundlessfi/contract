@@ -1,5 +1,3 @@
-#![cfg(test)]
-
 use crate::contract::{CrowdfundRegistry, CrowdfundRegistryClient};
 use crate::storage::CampaignStatus;
 use core_escrow::{CoreEscrow, CoreEscrowClient};
@@ -9,6 +7,7 @@ use soroban_sdk::testutils::{Address as _, Ledger};
 use soroban_sdk::token::{StellarAssetClient, TokenClient};
 use soroban_sdk::{Address, Env, String, Vec};
 
+#[allow(dead_code)]
 struct TestEnv<'a> {
     env: Env,
     client: CrowdfundRegistryClient<'a>,

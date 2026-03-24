@@ -119,7 +119,8 @@ echo "Initializing CrowdfundRegistry..."
 invoke "$CROWDFUND_REGISTRY_ID" init \
   --admin "$ADMIN_ADDRESS" \
   --core_escrow "$CORE_ESCROW_ID" \
-  --reputation_registry "$REPUTATION_ID"
+  --reputation_registry "$REPUTATION_ID" \
+  --governance_voting "$GOVERNANCE_ID"
 
 echo "Initializing GrantHub..."
 invoke "$GRANT_HUB_ID" init \

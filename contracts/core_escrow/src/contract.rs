@@ -84,12 +84,11 @@ impl CoreEscrow {
             .persistent()
             .get(&DataKey::EscrowPool(pool_id))
             .ok_or(Error::PoolNotFound)?;
-        Ok(pool
-            .total_deposited
+        pool.total_deposited
             .checked_sub(pool.total_released)
             .ok_or(Error::Overflow)?
             .checked_sub(pool.total_refunded)
-            .ok_or(Error::Overflow)?)
+            .ok_or(Error::Overflow)
     }
 
     pub fn is_locked(env: Env, pool_id: BytesN<32>) -> Result<bool, Error> {
@@ -145,7 +144,7 @@ impl CoreEscrow {
             .ok_or(Error::NotInitialized)?;
         let fee =
             math::calculate_fee_bps(pledge, config.crowdfund_fee_bps).ok_or(Error::Overflow)?;
-        Ok(pledge.checked_add(fee).ok_or(Error::Overflow)?)
+        pledge.checked_add(fee).ok_or(Error::Overflow)
     }
 
     pub fn get_fee_record(env: Env, pool_id: BytesN<32>) -> Result<FeeRecord, Error> {
@@ -206,7 +205,7 @@ impl CoreEscrow {
     pub fn set_insurance_cut(env: Env, new_bps: u32) -> Result<(), Error> {
         let admin = Self::require_admin(&env)?;
         admin.require_auth();
-        if new_bps < MIN_INSURANCE_CUT_BPS || new_bps > MAX_INSURANCE_CUT_BPS {
+        if !(MIN_INSURANCE_CUT_BPS..=MAX_INSURANCE_CUT_BPS).contains(&new_bps) {
             return Err(Error::InsuranceCutOutOfRange);
         }
         let mut config: FeeConfig = env
@@ -406,7 +405,7 @@ impl CoreEscrow {
         }
         env.storage()
             .persistent()
-            .set(&DataKey::SlotCount(pool_id), &(slots.len() as u32));
+            .set(&DataKey::SlotCount(pool_id), &slots.len());
         Ok(())
     }
 
@@ -690,7 +689,7 @@ impl CoreEscrow {
         env.storage().persistent().set(&pool_key, &pool);
         let fee_record = FeeRecord {
             pool_id: pool_id.clone(),
-            sub_type: sub_type.clone(),
+            sub_type,
             gross_amount,
             fee_amount: fee,
             treasury_cut,
