@@ -63,8 +63,9 @@ fn test_hackathon_full_lifecycle() {
     p.hackathon
         .submit_project(&hid, &lead2, &String::from_str(&p.env, "ipfs://project-b"));
 
-    // Score submissions (after submission deadline)
+    // Open judging and score submissions (after submission deadline)
     p.env.ledger().set_timestamp(2500);
+    p.hackathon.open_judging(&hid);
     p.hackathon.score_submission(&hid, &judge1, &lead1, &90);
     p.hackathon.score_submission(&hid, &judge2, &lead1, &80);
     p.hackathon.score_submission(&hid, &judge1, &lead2, &70);
@@ -185,8 +186,9 @@ fn test_disqualify_shifts_prizes() {
     p.hackathon
         .submit_project(&hid, &lead2, &String::from_str(&p.env, "ipfs://b"));
 
-    // Score (lead1 scores higher)
+    // Open judging and score (lead1 scores higher)
     p.env.ledger().set_timestamp(2500);
+    p.hackathon.open_judging(&hid);
     p.hackathon.score_submission(&hid, &judge, &lead1, &95);
     p.hackathon.score_submission(&hid, &judge, &lead2, &80);
 

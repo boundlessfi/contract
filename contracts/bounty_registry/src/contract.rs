@@ -113,7 +113,7 @@ impl BountyRegistry {
         count += 1;
         env.storage().instance().set(&DataKey::BountyCount, &count);
 
-        let escrow_addr = Self::get_escrow_addr(&env);
+        let escrow_addr = Self::get_escrow_addr(&env)?;
 
         let pool_args: Vec<Val> = Vec::from_array(
             &env,
@@ -192,7 +192,7 @@ impl BountyRegistry {
         }
 
         // Spend 1 SparkCredit
-        let rep_addr = Self::get_rep_addr(&env);
+        let rep_addr = Self::get_rep_addr(&env)?;
         let contract_addr = env.current_contract_address();
         let spend_args: Vec<Val> = Vec::from_array(
             &env,
@@ -208,7 +208,7 @@ impl BountyRegistry {
         }
 
         // Lock escrow and define single release slot
-        let escrow_addr = Self::get_escrow_addr(&env);
+        let escrow_addr = Self::get_escrow_addr(&env)?;
         let lock_args: Vec<Val> =
             Vec::from_array(&env, [bounty.escrow_pool_id.clone().into_val(&env)]);
         env.invoke_contract::<()>(&escrow_addr, &sym(&env, "lock_pool"), lock_args);
@@ -267,7 +267,7 @@ impl BountyRegistry {
         let winner = bounty.assignee.clone().ok_or(Error::NotAssignee)?;
 
         // Release escrow
-        let escrow_addr = Self::get_escrow_addr(&env);
+        let escrow_addr = Self::get_escrow_addr(&env)?;
         let release_args: Vec<Val> = Vec::from_array(
             &env,
             [
@@ -278,7 +278,7 @@ impl BountyRegistry {
         env.invoke_contract::<()>(&escrow_addr, &sym(&env, "release_slot"), release_args);
 
         // Record reputation + award credit
-        let rep_addr = Self::get_rep_addr(&env);
+        let rep_addr = Self::get_rep_addr(&env)?;
         let contract_addr = env.current_contract_address();
         let comp_args: Vec<Val> = Vec::from_array(
             &env,
@@ -344,7 +344,7 @@ impl BountyRegistry {
         }
 
         // Spend 1 SparkCredit
-        let rep_addr = Self::get_rep_addr(&env);
+        let rep_addr = Self::get_rep_addr(&env)?;
         let contract_addr = env.current_contract_address();
         let spend_args: Vec<Val> = Vec::from_array(
             &env,
@@ -432,7 +432,7 @@ impl BountyRegistry {
         env.storage().persistent().set(&app_key, &app);
 
         // Lock escrow and define release slot
-        let escrow_addr = Self::get_escrow_addr(&env);
+        let escrow_addr = Self::get_escrow_addr(&env)?;
         let lock_args: Vec<Val> =
             Vec::from_array(&env, [bounty.escrow_pool_id.clone().into_val(&env)]);
         env.invoke_contract::<()>(&escrow_addr, &sym(&env, "lock_pool"), lock_args);
@@ -449,7 +449,7 @@ impl BountyRegistry {
         env.invoke_contract::<()>(&escrow_addr, &sym(&env, "define_release_slots"), slot_args);
 
         // Restore credits to non-selected applicants
-        let rep_addr = Self::get_rep_addr(&env);
+        let rep_addr = Self::get_rep_addr(&env)?;
         let contract_addr = env.current_contract_address();
         let app_count: u32 = env
             .storage()
@@ -590,7 +590,7 @@ impl BountyRegistry {
         let winner = bounty.assignee.clone().ok_or(Error::NotAssignee)?;
 
         // Release escrow
-        let escrow_addr = Self::get_escrow_addr(&env);
+        let escrow_addr = Self::get_escrow_addr(&env)?;
         let release_args: Vec<Val> = Vec::from_array(
             &env,
             [
@@ -601,7 +601,7 @@ impl BountyRegistry {
         env.invoke_contract::<()>(&escrow_addr, &sym(&env, "release_slot"), release_args);
 
         // Record reputation + award credit
-        let rep_addr = Self::get_rep_addr(&env);
+        let rep_addr = Self::get_rep_addr(&env)?;
         let contract_addr = env.current_contract_address();
         let comp_args: Vec<Val> = Vec::from_array(
             &env,
@@ -671,7 +671,7 @@ impl BountyRegistry {
         }
 
         // Release partial from escrow
-        let escrow_addr = Self::get_escrow_addr(&env);
+        let escrow_addr = Self::get_escrow_addr(&env)?;
         let release_args: Vec<Val> = Vec::from_array(
             &env,
             [
@@ -683,7 +683,7 @@ impl BountyRegistry {
         env.invoke_contract::<()>(&escrow_addr, &sym(&env, "release_partial"), release_args);
 
         // Record reputation + award credit
-        let rep_addr = Self::get_rep_addr(&env);
+        let rep_addr = Self::get_rep_addr(&env)?;
         let contract_addr = env.current_contract_address();
         let comp_args: Vec<Val> = Vec::from_array(
             &env,
@@ -733,7 +733,7 @@ impl BountyRegistry {
         }
 
         // Refund remaining escrow to creator
-        let escrow_addr = Self::get_escrow_addr(&env);
+        let escrow_addr = Self::get_escrow_addr(&env)?;
         let refund_args: Vec<Val> =
             Vec::from_array(&env, [bounty.escrow_pool_id.clone().into_val(&env)]);
         env.invoke_contract::<()>(&escrow_addr, &sym(&env, "refund_remaining"), refund_args);
@@ -789,7 +789,7 @@ impl BountyRegistry {
                 .set(&DataKey::SplitRecipient(bounty_id, i as u32), &addr);
         }
 
-        let escrow_addr = Self::get_escrow_addr(&env);
+        let escrow_addr = Self::get_escrow_addr(&env)?;
         let slot_args: Vec<Val> = Vec::from_array(
             &env,
             [
@@ -833,7 +833,7 @@ impl BountyRegistry {
             .ok_or(Error::ApplicationNotFound)?;
 
         // Release the slot
-        let escrow_addr = Self::get_escrow_addr(&env);
+        let escrow_addr = Self::get_escrow_addr(&env)?;
         let release_args: Vec<Val> = Vec::from_array(
             &env,
             [
@@ -844,7 +844,7 @@ impl BountyRegistry {
         env.invoke_contract::<()>(&escrow_addr, &sym(&env, "release_slot"), release_args);
 
         // Record reputation for the recipient
-        let rep_addr = Self::get_rep_addr(&env);
+        let rep_addr = Self::get_rep_addr(&env)?;
         let contract_addr = env.current_contract_address();
         let comp_args: Vec<Val> = Vec::from_array(
             &env,
@@ -907,7 +907,7 @@ impl BountyRegistry {
         let winner = bounty.assignee.clone().ok_or(Error::NotAssignee)?;
 
         // Release escrow slot 0
-        let escrow_addr = Self::get_escrow_addr(&env);
+        let escrow_addr = Self::get_escrow_addr(&env)?;
         let release_args: Vec<Val> = Vec::from_array(
             &env,
             [
@@ -918,7 +918,7 @@ impl BountyRegistry {
         env.invoke_contract::<()>(&escrow_addr, &sym(&env, "release_slot"), release_args);
 
         // Record reputation with default 50 points for auto-release
-        let rep_addr = Self::get_rep_addr(&env);
+        let rep_addr = Self::get_rep_addr(&env)?;
         let contract_addr = env.current_contract_address();
         let comp_args: Vec<Val> = Vec::from_array(
             &env,
@@ -973,7 +973,7 @@ impl BountyRegistry {
         }
 
         // Restore credits to all applicants
-        let rep_addr = Self::get_rep_addr(&env);
+        let rep_addr = Self::get_rep_addr(&env)?;
         let contract_addr = env.current_contract_address();
         let app_count: u32 = env
             .storage()
@@ -995,7 +995,7 @@ impl BountyRegistry {
         }
 
         // Refund escrow
-        let escrow_addr = Self::get_escrow_addr(&env);
+        let escrow_addr = Self::get_escrow_addr(&env)?;
         let refund_args: Vec<Val> =
             Vec::from_array(&env, [bounty.escrow_pool_id.clone().into_val(&env)]);
         env.invoke_contract::<()>(&escrow_addr, &sym(&env, "refund_all"), refund_args);
@@ -1040,7 +1040,7 @@ impl BountyRegistry {
         env.storage().persistent().set(&app_key, &app);
 
         // Restore SparkCredit
-        let rep_addr = Self::get_rep_addr(&env);
+        let rep_addr = Self::get_rep_addr(&env)?;
         let restore_args: Vec<Val> = Vec::from_array(
             &env,
             [
@@ -1132,17 +1132,17 @@ impl BountyRegistry {
             .extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND);
     }
 
-    fn get_escrow_addr(env: &Env) -> Address {
+    fn get_escrow_addr(env: &Env) -> Result<Address, Error> {
         env.storage()
             .instance()
             .get(&DataKey::CoreEscrow)
-            .expect("not initialized")
+            .ok_or(Error::NotInitialized)
     }
 
-    fn get_rep_addr(env: &Env) -> Address {
+    fn get_rep_addr(env: &Env) -> Result<Address, Error> {
         env.storage()
             .instance()
             .get(&DataKey::ReputationRegistry)
-            .expect("not initialized")
+            .ok_or(Error::NotInitialized)
     }
 }

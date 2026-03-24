@@ -124,10 +124,11 @@ fn test_single_contributor_across_all_modules() {
         &String::from_str(&p.env, "ipfs://cross"),
     );
 
-    // Score
+    // Open judging and score
     p.env.ledger().with_mut(|l| {
         l.timestamp += 600;
     });
+    p.hackathon.open_judging(&hid);
     p.hackathon
         .score_submission(&hid, &judge, &contributor, &85);
 

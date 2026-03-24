@@ -195,10 +195,12 @@ impl ReputationRegistry {
         let key = DataKey::Profile(contributor.clone());
         let mut profile = Self::get_or_create_profile(&env, &contributor);
 
-        profile.overall_score += points;
+        profile.overall_score = profile.overall_score.saturating_add(points);
         let current = profile.category_scores.get(category.clone()).unwrap_or(0);
-        profile.category_scores.set(category, current + points);
-        profile.bounties_completed += 1;
+        profile
+            .category_scores
+            .set(category, current.saturating_add(points));
+        profile.bounties_completed = profile.bounties_completed.saturating_add(1);
 
         profile.level = Self::compute_level(profile.overall_score);
         env.storage().persistent().set(&key, &profile);
@@ -227,10 +229,10 @@ impl ReputationRegistry {
         let key = DataKey::Profile(contributor.clone());
         let mut profile = Self::get_or_create_profile(&env, &contributor);
 
-        profile.overall_score += points;
-        profile.hackathons_entered += 1;
+        profile.overall_score = profile.overall_score.saturating_add(points);
+        profile.hackathons_entered = profile.hackathons_entered.saturating_add(1);
         if is_win {
-            profile.hackathons_won += 1;
+            profile.hackathons_won = profile.hackathons_won.saturating_add(1);
         }
 
         profile.level = Self::compute_level(profile.overall_score);
@@ -251,8 +253,8 @@ impl ReputationRegistry {
 
         let key = DataKey::Profile(backer.clone());
         let mut profile = Self::get_or_create_profile(&env, &backer);
-        profile.campaigns_backed += 1;
-        profile.overall_score += 5; // small reputation boost
+        profile.campaigns_backed = profile.campaigns_backed.saturating_add(1);
+        profile.overall_score = profile.overall_score.saturating_add(5); // small reputation boost
         profile.level = Self::compute_level(profile.overall_score);
         env.storage().persistent().set(&key, &profile);
         Ok(())
@@ -269,9 +271,9 @@ impl ReputationRegistry {
 
         let key = DataKey::Profile(recipient.clone());
         let mut profile = Self::get_or_create_profile(&env, &recipient);
-        profile.grants_received += 1;
-        profile.total_earned += amount;
-        profile.overall_score += 20;
+        profile.grants_received = profile.grants_received.saturating_add(1);
+        profile.total_earned = profile.total_earned.saturating_add(amount);
+        profile.overall_score = profile.overall_score.saturating_add(20);
         profile.level = Self::compute_level(profile.overall_score);
         env.storage().persistent().set(&key, &profile);
         Ok(())
@@ -402,7 +404,7 @@ impl ReputationRegistry {
             .get(&key)
             .ok_or(Error::ProfileNotFound)?;
 
-        profile.overall_score += points;
+        profile.overall_score = profile.overall_score.saturating_add(points);
         profile.level = Self::compute_level(profile.overall_score);
         env.storage().persistent().set(&key, &profile);
 

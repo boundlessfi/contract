@@ -512,6 +512,7 @@ fn test_sponsored_track_lifecycle() {
         .submit_project(&hid, &lead1, &String::from_str(&p.env, "ipfs://ui"));
 
     p.env.ledger().set_timestamp(2500);
+    p.hackathon.open_judging(&hid);
     p.hackathon.score_submission(&hid, &judge, &lead1, &90);
 
     p.env.ledger().set_timestamp(3500);
@@ -564,6 +565,7 @@ fn test_permissionless_finalize_hackathon() {
         .submit_project(&hid, &lead1, &String::from_str(&p.env, "ipfs://pf"));
 
     p.env.ledger().set_timestamp(2500);
+    p.hackathon.open_judging(&hid);
     p.hackathon.score_submission(&hid, &judge, &lead1, &85);
 
     // After judging deadline, ANYONE can finalize (not just creator)

@@ -341,7 +341,7 @@ impl HackathonRegistry {
         }
 
         if env.ledger().timestamp() <= hackathon.submission_deadline {
-            return Err(Error::SubmissionClosed);
+            return Err(Error::SubmissionPeriodNotEnded);
         }
 
         hackathon.status = HackathonStatus::Judging;
@@ -363,7 +363,7 @@ impl HackathonRegistry {
 
         let hackathon = Self::load_hackathon(&env, hackathon_id)?;
 
-        if env.ledger().timestamp() <= hackathon.submission_deadline {
+        if hackathon.status != HackathonStatus::Judging {
             return Err(Error::JudgingNotActive);
         }
         if env.ledger().timestamp() > hackathon.judging_deadline {
