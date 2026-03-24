@@ -258,18 +258,6 @@ impl HackathonRegistry {
             return Err(Error::MaxParticipantsReached);
         }
 
-        // Spend 1 SparkCredit via ReputationRegistry
-        let rep_addr: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::ReputationRegistry)
-            .ok_or(Error::NotInitialized)?;
-        let rep_client = ReputationRegistryClient::new(&env, &rep_addr);
-        let spent = rep_client.spend_credit(&env.current_contract_address(), &team_lead);
-        if !spent {
-            return Err(Error::InsufficientCredits);
-        }
-
         // Create a placeholder submission (not yet submitted)
         let submission = Submission {
             team_lead: team_lead.clone(),

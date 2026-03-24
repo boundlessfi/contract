@@ -50,9 +50,9 @@ fn test_hackathon_full_lifecycle() {
     p.hackathon.register_team(&hid, &lead1);
     p.hackathon.register_team(&hid, &lead2);
 
-    // Credits were spent
-    assert_eq!(p.reputation.get_credits(&lead1), 2);
-    assert_eq!(p.reputation.get_credits(&lead2), 2);
+    // SparkCredits are NOT spent for hackathon registration (credits are bounty-only)
+    assert_eq!(p.reputation.get_credits(&lead1), 3);
+    assert_eq!(p.reputation.get_credits(&lead2), 3);
 
     assert_eq!(p.hackathon.get_hackathon(&hid).submission_count, 2);
 

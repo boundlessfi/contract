@@ -25,7 +25,6 @@ pub enum Error {
     NotCreator = 1018,
     NotAdmin = 1019,
     InvalidStatus = 1020,
-    InsufficientCredits = 1021,
     AlreadyJudge = 1022,
     JudgeNotFound = 1023,
     AlreadyDisqualified = 1024,

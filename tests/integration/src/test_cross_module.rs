@@ -100,12 +100,8 @@ fn test_single_contributor_across_all_modules() {
 
     p.hackathon.add_judge(&hid, &judge);
 
-    // Register (spends 1 credit: 2 → 1)
-    let credits_before_register = p.reputation.get_credits(&contributor);
+    // Register (no credit spent — SparkCredits are bounty-only)
     p.hackathon.register_team(&hid, &contributor);
-    let credits_after_register = p.reputation.get_credits(&contributor);
-    assert_eq!(credits_before_register - credits_after_register, 1,
-        "Expected credit to be spent: before={}, after={}", credits_before_register, credits_after_register);
 
     // Submit
     p.env.ledger().with_mut(|l| {
@@ -138,8 +134,9 @@ fn test_single_contributor_across_all_modules() {
     assert!(final_profile.hackathons_entered >= 1);
     assert!(final_profile.overall_score > 0);
 
-    // Credits: 3 (start) - 1 (bounty claim) + 1 (bounty completion award) - 1 (hackathon register) = 2
-    assert_eq!(p.reputation.get_credits(&contributor), 2);
+    // Credits: 3 (start) - 1 (bounty claim) + 1 (bounty completion award) = 3
+    // Hackathon registration does NOT spend credits (SparkCredits are bounty-only)
+    assert_eq!(p.reputation.get_credits(&contributor), 3);
 }
 
 #[test]
