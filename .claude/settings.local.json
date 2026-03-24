@@ -6,7 +6,8 @@
       "Bash(cargo test:*)",
       "WebSearch",
       "Bash(cargo search:*)",
-      "Bash(gh api:*)"
+      "Bash(gh api:*)",
+      "Bash(wc -l /Users/0xdevcollins/Documents/startups/boundless-repos/contract/contracts/*/src/contract.rs)"
     ]
   }
 }

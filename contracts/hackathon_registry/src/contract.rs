@@ -345,6 +345,28 @@ impl HackathonRegistry {
     // JUDGING
     // ========================================================================
 
+    /// Permissionless: transitions hackathon to Judging status after submission deadline.
+    pub fn open_judging(env: Env, hackathon_id: u64) -> Result<(), Error> {
+        let mut hackathon = Self::load_hackathon(&env, hackathon_id)?;
+
+        if hackathon.status != HackathonStatus::Registration
+            && hackathon.status != HackathonStatus::Submission
+        {
+            return Err(Error::InvalidStatus);
+        }
+
+        if env.ledger().timestamp() <= hackathon.submission_deadline {
+            return Err(Error::SubmissionClosed);
+        }
+
+        hackathon.status = HackathonStatus::Judging;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Hackathon(hackathon_id), &hackathon);
+
+        Ok(())
+    }
+
     pub fn score_submission(
         env: Env,
         hackathon_id: u64,
@@ -417,9 +439,9 @@ impl HackathonRegistry {
     // FINALIZATION
     // ========================================================================
 
+    /// Permissionless: anyone can call after judging deadline to finalize and distribute prizes.
     pub fn finalize_hackathon(env: Env, hackathon_id: u64) -> Result<(), Error> {
         let mut hackathon = Self::load_hackathon(&env, hackathon_id)?;
-        hackathon.creator.require_auth();
 
         // Must be after judging deadline
         if env.ledger().timestamp() <= hackathon.judging_deadline {

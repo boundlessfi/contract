@@ -532,6 +532,16 @@ impl ReputationRegistry {
             .unwrap_or(false)
     }
 
+    /// Returns the timestamp when the user can next recharge credits.
+    pub fn next_recharge_at(env: Env, user: Address) -> Result<u64, Error> {
+        let credits: CreditData = env
+            .storage()
+            .persistent()
+            .get(&DataKey::CreditData(user))
+            .ok_or(Error::ProfileNotFound)?;
+        Ok(credits.last_recharge + RECHARGE_INTERVAL)
+    }
+
     // ========================================================================
     // ADMIN
     // ========================================================================

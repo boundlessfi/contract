@@ -1076,25 +1076,7 @@
         }
       ]
     ],
-    [
-      [
-        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABB6KO",
-        {
-          "function": {
-            "contract_fn": {
-              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAYRE5",
-              "function_name": "finalize_hackathon",
-              "args": [
-                {
-                  "u64": "1"
-                }
-              ]
-            }
-          },
-          "sub_invocations": []
-        }
-      ]
-    ],
+    [],
     [],
     [],
     []
@@ -4213,26 +4195,6 @@
               "key": {
                 "ledger_key_nonce": {
                   "nonce": "2891388370666955040"
-                }
-              },
-              "durability": "temporary",
-              "val": "void"
-            }
-          },
-          "ext": "v0"
-        },
-        "live_until": 6311999
-      },
-      {
-        "entry": {
-          "last_modified_ledger_seq": 0,
-          "data": {
-            "contract_data": {
-              "ext": "v0",
-              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABB6KO",
-              "key": {
-                "ledger_key_nonce": {
-                  "nonce": "2623024502929126324"
                 }
               },
               "durability": "temporary",
