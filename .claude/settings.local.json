@@ -3,7 +3,10 @@
     "allow": [
       "Bash(done)",
       "Bash(cargo check:*)",
-      "Bash(cargo test:*)"
+      "Bash(cargo test:*)",
+      "WebSearch",
+      "Bash(cargo search:*)",
+      "Bash(gh api:*)"
     ]
   }
 }
