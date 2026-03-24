@@ -60,6 +60,27 @@ pub struct QFRoundData {
     pub project_count: u32,
 }
 
+// Local copies of governance_voting types for cross-contract deserialization.
+// Field names and order must match the canonical definitions in governance_voting.
+
+#[contracttype]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum VoteContext {
+    CampaignValidation,
+    RetrospectiveGrant,
+    QFRound,
+    HackathonJudging,
+}
+
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct VoteOption {
+    pub id: u32,
+    pub label: String,
+    pub votes: u32,
+    pub weighted_votes: u64,
+}
+
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
@@ -69,8 +90,8 @@ pub enum DataKey {
     GovernanceVoting,
     GrantCount,
     Grant(u64),
-    GrantMilestone(u64, u32), // grant_id, milestone_index
-    QFRound(u64),             // grant_id -> QFRoundData
-    // For retrospective grants, store the session_id
-    RetroSession(u64), // grant_id -> BytesN<32>
+    GrantMilestone(u64, u32),  // grant_id, milestone_index
+    GrantRecipient(u64),       // grant_id -> Address (milestone grant recipient)
+    QFRound(u64),              // grant_id -> QFRoundData
+    RetroSession(u64),         // grant_id -> BytesN<32>
 }

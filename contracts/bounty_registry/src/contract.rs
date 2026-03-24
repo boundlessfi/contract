@@ -10,9 +10,11 @@ use boundless_types::ttl::{
     INSTANCE_TTL_EXTEND, INSTANCE_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND, PERSISTENT_TTL_THRESHOLD,
 };
 use boundless_types::{ActivityCategory, ModuleType};
-use core_escrow::CoreEscrowClient;
-use reputation_registry::ReputationRegistryClient;
-use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, String, Vec};
+use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, IntoVal, String, Symbol, Val, Vec};
+
+fn sym(env: &Env, name: &str) -> Symbol {
+    Symbol::new(env, name)
+}
 
 #[contract]
 pub struct BountyRegistry;
@@ -111,21 +113,28 @@ impl BountyRegistry {
         count += 1;
         env.storage().instance().set(&DataKey::BountyCount, &count);
 
-        let escrow_client = Self::escrow_client(&env);
+        let escrow_addr = Self::get_escrow_addr(&env);
 
-        let pool_id = escrow_client.create_pool(
-            &creator,
-            &ModuleType::Bounty,
-            &count,
-            &amount,
-            &asset,
-            &deadline,
-            &env.current_contract_address(),
+        let pool_args: Vec<Val> = Vec::from_array(
+            &env,
+            [
+                creator.clone().into_val(&env),
+                ModuleType::Bounty.into_val(&env),
+                count.into_val(&env),
+                amount.into_val(&env),
+                asset.clone().into_val(&env),
+                deadline.into_val(&env),
+                env.current_contract_address().into_val(&env),
+            ],
         );
+        let pool_id: BytesN<32> =
+            env.invoke_contract(&escrow_addr, &sym(&env, "create_pool"), pool_args);
 
         // Contest and Split bounties lock the pool immediately
         if bounty_type == BountyType::Contest || bounty_type == BountyType::Split {
-            escrow_client.lock_pool(&pool_id);
+            let lock_args: Vec<Val> =
+                Vec::from_array(&env, [pool_id.clone().into_val(&env)]);
+            env.invoke_contract::<()>(&escrow_addr, &sym(&env, "lock_pool"), lock_args);
         }
 
         let bounty = Bounty {
@@ -165,8 +174,6 @@ impl BountyRegistry {
     // FCFS FLOW: claim → approve
     // ========================================================================
 
-    /// FCFS only: first contributor to claim gets the bounty.
-    /// Spends 1 SparkCredit, locks escrow, assigns contributor.
     pub fn claim_bounty(env: Env, contributor: Address, bounty_id: u64) -> Result<(), Error> {
         contributor.require_auth();
 
@@ -188,20 +195,34 @@ impl BountyRegistry {
         }
 
         // Spend 1 SparkCredit
-        let rep_client = Self::rep_client(&env);
-        let had_credit =
-            rep_client.spend_credit(&env.current_contract_address(), &contributor);
+        let rep_addr = Self::get_rep_addr(&env);
+        let contract_addr = env.current_contract_address();
+        let spend_args: Vec<Val> = Vec::from_array(
+            &env,
+            [contract_addr.into_val(&env), contributor.clone().into_val(&env)],
+        );
+        let had_credit: bool =
+            env.invoke_contract(&rep_addr, &sym(&env, "spend_credit"), spend_args);
         if !had_credit {
             return Err(Error::InsufficientCredits);
         }
 
         // Lock escrow and define single release slot
-        let escrow_client = Self::escrow_client(&env);
-        escrow_client.lock_pool(&bounty.escrow_pool_id);
+        let escrow_addr = Self::get_escrow_addr(&env);
+        let lock_args: Vec<Val> =
+            Vec::from_array(&env, [bounty.escrow_pool_id.clone().into_val(&env)]);
+        env.invoke_contract::<()>(&escrow_addr, &sym(&env, "lock_pool"), lock_args);
 
-        let mut slots = Vec::new(&env);
+        let mut slots: Vec<(Address, i128)> = Vec::new(&env);
         slots.push_back((contributor.clone(), bounty.amount));
-        escrow_client.define_release_slots(&bounty.escrow_pool_id, &slots);
+        let slot_args: Vec<Val> = Vec::from_array(
+            &env,
+            [
+                bounty.escrow_pool_id.clone().into_val(&env),
+                slots.into_val(&env),
+            ],
+        );
+        env.invoke_contract::<()>(&escrow_addr, &sym(&env, "define_release_slots"), slot_args);
 
         bounty.assignee = Some(contributor.clone());
         bounty.status = BountyStatus::InProgress;
@@ -218,7 +239,6 @@ impl BountyRegistry {
         Ok(())
     }
 
-    /// FCFS: creator approves the claimed work and releases payment.
     pub fn approve_fcfs(
         env: Env,
         creator: Address,
@@ -247,20 +267,39 @@ impl BountyRegistry {
         let winner = bounty.assignee.clone().ok_or(Error::NotAssignee)?;
 
         // Release escrow
-        let escrow_client = Self::escrow_client(&env);
-        escrow_client.release_slot(&bounty.escrow_pool_id, &0);
-
-        // Record reputation
-        let rep_client = Self::rep_client(&env);
-        rep_client.record_completion(
-            &env.current_contract_address(),
-            &winner,
-            &bounty.category,
-            &points,
+        let escrow_addr = Self::get_escrow_addr(&env);
+        let release_args: Vec<Val> = Vec::from_array(
+            &env,
+            [
+                bounty.escrow_pool_id.clone().into_val(&env),
+                0u32.into_val(&env),
+            ],
         );
+        env.invoke_contract::<()>(&escrow_addr, &sym(&env, "release_slot"), release_args);
 
-        // Award bonus credit for completion
-        rep_client.award_credits(&env.current_contract_address(), &winner, &1);
+        // Record reputation + award credit
+        let rep_addr = Self::get_rep_addr(&env);
+        let contract_addr = env.current_contract_address();
+        let comp_args: Vec<Val> = Vec::from_array(
+            &env,
+            [
+                contract_addr.clone().into_val(&env),
+                winner.clone().into_val(&env),
+                bounty.category.into_val(&env),
+                points.into_val(&env),
+            ],
+        );
+        env.invoke_contract::<()>(&rep_addr, &sym(&env, "record_completion"), comp_args);
+
+        let award_args: Vec<Val> = Vec::from_array(
+            &env,
+            [
+                contract_addr.into_val(&env),
+                winner.clone().into_val(&env),
+                1u32.into_val(&env),
+            ],
+        );
+        env.invoke_contract::<()>(&rep_addr, &sym(&env, "award_credits"), award_args);
 
         bounty.status = BountyStatus::Completed;
         bounty.winner_count = 1;
@@ -279,7 +318,6 @@ impl BountyRegistry {
     // APPLICATION FLOW: apply → select → submit → approve
     // ========================================================================
 
-    /// Application type: applicant submits a proposal. Spends 1 SparkCredit.
     pub fn apply(
         env: Env,
         applicant: Address,
@@ -310,9 +348,14 @@ impl BountyRegistry {
         }
 
         // Spend 1 SparkCredit
-        let rep_client = Self::rep_client(&env);
-        let had_credit =
-            rep_client.spend_credit(&env.current_contract_address(), &applicant);
+        let rep_addr = Self::get_rep_addr(&env);
+        let contract_addr = env.current_contract_address();
+        let spend_args: Vec<Val> = Vec::from_array(
+            &env,
+            [contract_addr.into_val(&env), applicant.clone().into_val(&env)],
+        );
+        let had_credit: bool =
+            env.invoke_contract(&rep_addr, &sym(&env, "spend_credit"), spend_args);
         if !had_credit {
             return Err(Error::InsufficientCredits);
         }
@@ -350,7 +393,6 @@ impl BountyRegistry {
         Ok(())
     }
 
-    /// Creator selects an applicant. Locks escrow, restores credits to non-selected.
     pub fn select_applicant(
         env: Env,
         creator: Address,
@@ -390,22 +432,31 @@ impl BountyRegistry {
         app.status = ApplicationStatus::Accepted;
         env.storage().persistent().set(&app_key, &app);
 
-        // Lock escrow and define release slot for selected applicant
-        let escrow_client = Self::escrow_client(&env);
-        escrow_client.lock_pool(&bounty.escrow_pool_id);
+        // Lock escrow and define release slot
+        let escrow_addr = Self::get_escrow_addr(&env);
+        let lock_args: Vec<Val> =
+            Vec::from_array(&env, [bounty.escrow_pool_id.clone().into_val(&env)]);
+        env.invoke_contract::<()>(&escrow_addr, &sym(&env, "lock_pool"), lock_args);
 
-        let mut slots = Vec::new(&env);
+        let mut slots: Vec<(Address, i128)> = Vec::new(&env);
         slots.push_back((applicant.clone(), bounty.amount));
-        escrow_client.define_release_slots(&bounty.escrow_pool_id, &slots);
+        let slot_args: Vec<Val> = Vec::from_array(
+            &env,
+            [
+                bounty.escrow_pool_id.clone().into_val(&env),
+                slots.into_val(&env),
+            ],
+        );
+        env.invoke_contract::<()>(&escrow_addr, &sym(&env, "define_release_slots"), slot_args);
 
         // Restore credits to non-selected applicants
-        let rep_client = Self::rep_client(&env);
+        let rep_addr = Self::get_rep_addr(&env);
+        let contract_addr = env.current_contract_address();
         let app_count: u32 = env
             .storage()
             .persistent()
             .get(&DataKey::ApplicantCount(bounty_id))
             .unwrap_or(0);
-        let contract_addr = env.current_contract_address();
         for i in 0..app_count {
             if let Some(addr) = env
                 .storage()
@@ -413,9 +464,17 @@ impl BountyRegistry {
                 .get::<_, Address>(&DataKey::Applicant(bounty_id, i))
             {
                 if addr != applicant {
-                    rep_client.restore_credit(&contract_addr, &addr);
+                    let restore_args: Vec<Val> = Vec::from_array(
+                        &env,
+                        [contract_addr.clone().into_val(&env), addr.clone().into_val(&env)],
+                    );
+                    env.invoke_contract::<()>(
+                        &rep_addr,
+                        &sym(&env, "restore_credit"),
+                        restore_args,
+                    );
                     // Mark rejected
-                    let other_key = DataKey::Application(bounty_id, addr.clone());
+                    let other_key = DataKey::Application(bounty_id, addr);
                     if let Some(mut other_app) = env
                         .storage()
                         .persistent()
@@ -441,7 +500,6 @@ impl BountyRegistry {
         Ok(())
     }
 
-    /// Submit work for Application or Contest bounties.
     pub fn submit_work(
         env: Env,
         contributor: Address,
@@ -463,7 +521,6 @@ impl BountyRegistry {
 
         match bounty.bounty_type {
             BountyType::Application => {
-                // Only the assigned contributor can submit
                 if bounty.assignee != Some(contributor.clone()) {
                     return Err(Error::NotAssignee);
                 }
@@ -473,7 +530,6 @@ impl BountyRegistry {
                 bounty.status = BountyStatus::InReview;
             }
             BountyType::Contest => {
-                // Anyone can submit to a contest (store as application)
                 if bounty.status != BountyStatus::Open {
                     return Err(Error::BountyNotOpen);
                 }
@@ -506,7 +562,6 @@ impl BountyRegistry {
         Ok(())
     }
 
-    /// Creator approves a submission for Application bounties.
     pub fn approve_submission(
         env: Env,
         creator: Address,
@@ -535,14 +590,39 @@ impl BountyRegistry {
         let winner = bounty.assignee.clone().ok_or(Error::NotAssignee)?;
 
         // Release escrow
-        let escrow_client = Self::escrow_client(&env);
-        escrow_client.release_slot(&bounty.escrow_pool_id, &0);
+        let escrow_addr = Self::get_escrow_addr(&env);
+        let release_args: Vec<Val> = Vec::from_array(
+            &env,
+            [
+                bounty.escrow_pool_id.clone().into_val(&env),
+                0u32.into_val(&env),
+            ],
+        );
+        env.invoke_contract::<()>(&escrow_addr, &sym(&env, "release_slot"), release_args);
 
         // Record reputation + award credit
-        let rep_client = Self::rep_client(&env);
+        let rep_addr = Self::get_rep_addr(&env);
         let contract_addr = env.current_contract_address();
-        rep_client.record_completion(&contract_addr, &winner, &bounty.category, &points);
-        rep_client.award_credits(&contract_addr, &winner, &1);
+        let comp_args: Vec<Val> = Vec::from_array(
+            &env,
+            [
+                contract_addr.clone().into_val(&env),
+                winner.clone().into_val(&env),
+                bounty.category.into_val(&env),
+                points.into_val(&env),
+            ],
+        );
+        env.invoke_contract::<()>(&rep_addr, &sym(&env, "record_completion"), comp_args);
+
+        let award_args: Vec<Val> = Vec::from_array(
+            &env,
+            [
+                contract_addr.into_val(&env),
+                winner.clone().into_val(&env),
+                1u32.into_val(&env),
+            ],
+        );
+        env.invoke_contract::<()>(&rep_addr, &sym(&env, "award_credits"), award_args);
 
         bounty.status = BountyStatus::Completed;
         bounty.winner_count = 1;
@@ -561,7 +641,6 @@ impl BountyRegistry {
     // CONTEST FLOW: submit_work → approve_contest_winner (per winner)
     // ========================================================================
 
-    /// Contest: creator approves a winning submission and releases a share.
     pub fn approve_contest_winner(
         env: Env,
         creator: Address,
@@ -596,18 +675,40 @@ impl BountyRegistry {
         }
 
         // Release partial from escrow
-        let escrow_client = Self::escrow_client(&env);
-        escrow_client.release_partial(
-            &bounty.escrow_pool_id,
-            &winner,
-            &payout_amount,
+        let escrow_addr = Self::get_escrow_addr(&env);
+        let release_args: Vec<Val> = Vec::from_array(
+            &env,
+            [
+                bounty.escrow_pool_id.clone().into_val(&env),
+                winner.clone().into_val(&env),
+                payout_amount.into_val(&env),
+            ],
         );
+        env.invoke_contract::<()>(&escrow_addr, &sym(&env, "release_partial"), release_args);
 
         // Record reputation + award credit
-        let rep_client = Self::rep_client(&env);
+        let rep_addr = Self::get_rep_addr(&env);
         let contract_addr = env.current_contract_address();
-        rep_client.record_completion(&contract_addr, &winner, &bounty.category, &points);
-        rep_client.award_credits(&contract_addr, &winner, &1);
+        let comp_args: Vec<Val> = Vec::from_array(
+            &env,
+            [
+                contract_addr.clone().into_val(&env),
+                winner.clone().into_val(&env),
+                bounty.category.into_val(&env),
+                points.into_val(&env),
+            ],
+        );
+        env.invoke_contract::<()>(&rep_addr, &sym(&env, "record_completion"), comp_args);
+
+        let award_args: Vec<Val> = Vec::from_array(
+            &env,
+            [
+                contract_addr.into_val(&env),
+                winner.clone().into_val(&env),
+                1u32.into_val(&env),
+            ],
+        );
+        env.invoke_contract::<()>(&rep_addr, &sym(&env, "award_credits"), award_args);
 
         bounty.winner_count += 1;
         bounty.status = BountyStatus::InProgress;
@@ -622,7 +723,6 @@ impl BountyRegistry {
         Ok(())
     }
 
-    /// Contest: finalize after all winners approved. Refunds remaining escrow.
     pub fn finalize_contest(
         env: Env,
         creator: Address,
@@ -644,9 +744,11 @@ impl BountyRegistry {
             return Err(Error::NotContestType);
         }
 
-        // Refund any remaining escrow to creator
-        let escrow_client = Self::escrow_client(&env);
-        escrow_client.refund_remaining(&bounty.escrow_pool_id);
+        // Refund remaining escrow to creator
+        let escrow_addr = Self::get_escrow_addr(&env);
+        let refund_args: Vec<Val> =
+            Vec::from_array(&env, [bounty.escrow_pool_id.clone().into_val(&env)]);
+        env.invoke_contract::<()>(&escrow_addr, &sym(&env, "refund_remaining"), refund_args);
 
         bounty.status = BountyStatus::Completed;
         env.storage().persistent().set(&key, &bounty);
@@ -658,7 +760,6 @@ impl BountyRegistry {
     // SPLIT FLOW: define_splits → approve_split (per slot)
     // ========================================================================
 
-    /// Split: creator defines how the bounty is divided among contributors.
     pub fn define_splits(
         env: Env,
         creator: Address,
@@ -693,13 +794,26 @@ impl BountyRegistry {
             return Err(Error::InvalidSplitShares);
         }
 
-        let escrow_client = Self::escrow_client(&env);
-        escrow_client.define_release_slots(&bounty.escrow_pool_id, &slots);
+        // Store recipients locally for later use in approve_split
+        for (i, (addr, _)) in slots.iter().enumerate() {
+            env.storage()
+                .persistent()
+                .set(&DataKey::SplitRecipient(bounty_id, i as u32), &addr);
+        }
+
+        let escrow_addr = Self::get_escrow_addr(&env);
+        let slot_args: Vec<Val> = Vec::from_array(
+            &env,
+            [
+                bounty.escrow_pool_id.clone().into_val(&env),
+                slots.into_val(&env),
+            ],
+        );
+        env.invoke_contract::<()>(&escrow_addr, &sym(&env, "define_release_slots"), slot_args);
 
         Ok(())
     }
 
-    /// Split: creator approves a specific contributor's milestone/slot.
     pub fn approve_split(
         env: Env,
         creator: Address,
@@ -723,18 +837,47 @@ impl BountyRegistry {
             return Err(Error::NotSplitType);
         }
 
-        // Get slot to find the recipient
-        let escrow_client = Self::escrow_client(&env);
-        let slot = escrow_client.get_slot(&bounty.escrow_pool_id, &slot_index);
+        // Get locally stored recipient
+        let recipient: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::SplitRecipient(bounty_id, slot_index))
+            .ok_or(Error::ApplicationNotFound)?;
 
         // Release the slot
-        escrow_client.release_slot(&bounty.escrow_pool_id, &slot_index);
+        let escrow_addr = Self::get_escrow_addr(&env);
+        let release_args: Vec<Val> = Vec::from_array(
+            &env,
+            [
+                bounty.escrow_pool_id.clone().into_val(&env),
+                slot_index.into_val(&env),
+            ],
+        );
+        env.invoke_contract::<()>(&escrow_addr, &sym(&env, "release_slot"), release_args);
 
         // Record reputation for the recipient
-        let rep_client = Self::rep_client(&env);
+        let rep_addr = Self::get_rep_addr(&env);
         let contract_addr = env.current_contract_address();
-        rep_client.record_completion(&contract_addr, &slot.recipient, &bounty.category, &points);
-        rep_client.award_credits(&contract_addr, &slot.recipient, &1);
+        let comp_args: Vec<Val> = Vec::from_array(
+            &env,
+            [
+                contract_addr.clone().into_val(&env),
+                recipient.clone().into_val(&env),
+                bounty.category.into_val(&env),
+                points.into_val(&env),
+            ],
+        );
+        env.invoke_contract::<()>(&rep_addr, &sym(&env, "record_completion"), comp_args);
+
+        let award_args: Vec<Val> = Vec::from_array(
+            &env,
+            [
+                contract_addr.into_val(&env),
+                recipient.into_val(&env),
+                1u32.into_val(&env),
+            ],
+        );
+        env.invoke_contract::<()>(&rep_addr, &sym(&env, "award_credits"), award_args);
 
         bounty.winner_count += 1;
         bounty.status = BountyStatus::InProgress;
@@ -753,8 +896,6 @@ impl BountyRegistry {
     // FCFS AUTO-RELEASE
     // ========================================================================
 
-    /// Permissionless: auto-releases escrow to the FCFS assignee if 7 days
-    /// have passed after the bounty deadline.
     pub fn auto_release_check(env: Env, bounty_id: u64) -> Result<(), Error> {
         let key = DataKey::Bounty(bounty_id);
         let mut bounty: Bounty = env
@@ -778,16 +919,40 @@ impl BountyRegistry {
         let winner = bounty.assignee.clone().ok_or(Error::NotAssignee)?;
 
         // Release escrow slot 0
-        let escrow_client = Self::escrow_client(&env);
-        escrow_client.release_slot(&bounty.escrow_pool_id, &0);
+        let escrow_addr = Self::get_escrow_addr(&env);
+        let release_args: Vec<Val> = Vec::from_array(
+            &env,
+            [
+                bounty.escrow_pool_id.clone().into_val(&env),
+                0u32.into_val(&env),
+            ],
+        );
+        env.invoke_contract::<()>(&escrow_addr, &sym(&env, "release_slot"), release_args);
 
         // Record reputation with default 50 points for auto-release
-        let rep_client = Self::rep_client(&env);
+        let rep_addr = Self::get_rep_addr(&env);
         let contract_addr = env.current_contract_address();
-        rep_client.record_completion(&contract_addr, &winner, &bounty.category, &50);
+        let comp_args: Vec<Val> = Vec::from_array(
+            &env,
+            [
+                contract_addr.clone().into_val(&env),
+                winner.clone().into_val(&env),
+                bounty.category.into_val(&env),
+                50u32.into_val(&env),
+            ],
+        );
+        env.invoke_contract::<()>(&rep_addr, &sym(&env, "record_completion"), comp_args);
 
         // Award 1 credit
-        rep_client.award_credits(&contract_addr, &winner, &1);
+        let award_args: Vec<Val> = Vec::from_array(
+            &env,
+            [
+                contract_addr.into_val(&env),
+                winner.into_val(&env),
+                1u32.into_val(&env),
+            ],
+        );
+        env.invoke_contract::<()>(&rep_addr, &sym(&env, "award_credits"), award_args);
 
         bounty.status = BountyStatus::Completed;
         bounty.winner_count = 1;
@@ -802,7 +967,6 @@ impl BountyRegistry {
     // COMMON OPERATIONS
     // ========================================================================
 
-    /// Cancel a bounty. Only if Open (no active claims/selections).
     pub fn cancel_bounty(env: Env, creator: Address, bounty_id: u64) -> Result<(), Error> {
         creator.require_auth();
 
@@ -821,7 +985,7 @@ impl BountyRegistry {
         }
 
         // Restore credits to all applicants
-        let rep_client = Self::rep_client(&env);
+        let rep_addr = Self::get_rep_addr(&env);
         let contract_addr = env.current_contract_address();
         let app_count: u32 = env
             .storage()
@@ -834,13 +998,23 @@ impl BountyRegistry {
                 .persistent()
                 .get::<_, Address>(&DataKey::Applicant(bounty_id, i))
             {
-                rep_client.restore_credit(&contract_addr, &addr);
+                let restore_args: Vec<Val> = Vec::from_array(
+                    &env,
+                    [contract_addr.clone().into_val(&env), addr.into_val(&env)],
+                );
+                env.invoke_contract::<()>(
+                    &rep_addr,
+                    &sym(&env, "restore_credit"),
+                    restore_args,
+                );
             }
         }
 
         // Refund escrow
-        let escrow_client = Self::escrow_client(&env);
-        escrow_client.refund_all(&bounty.escrow_pool_id);
+        let escrow_addr = Self::get_escrow_addr(&env);
+        let refund_args: Vec<Val> =
+            Vec::from_array(&env, [bounty.escrow_pool_id.clone().into_val(&env)]);
+        env.invoke_contract::<()>(&escrow_addr, &sym(&env, "refund_all"), refund_args);
 
         bounty.status = BountyStatus::Cancelled;
         env.storage().persistent().set(&key, &bounty);
@@ -849,7 +1023,6 @@ impl BountyRegistry {
         Ok(())
     }
 
-    /// Reject an application. Restores the applicant's SparkCredit.
     pub fn reject_application(
         env: Env,
         creator: Address,
@@ -883,8 +1056,15 @@ impl BountyRegistry {
         env.storage().persistent().set(&app_key, &app);
 
         // Restore SparkCredit
-        let rep_client = Self::rep_client(&env);
-        rep_client.restore_credit(&env.current_contract_address(), &applicant);
+        let rep_addr = Self::get_rep_addr(&env);
+        let restore_args: Vec<Val> = Vec::from_array(
+            &env,
+            [
+                env.current_contract_address().into_val(&env),
+                applicant.clone().into_val(&env),
+            ],
+        );
+        env.invoke_contract::<()>(&rep_addr, &sym(&env, "restore_credit"), restore_args);
 
         ApplicationRejected {
             bounty_id,
@@ -895,7 +1075,6 @@ impl BountyRegistry {
         Ok(())
     }
 
-    /// Update bounty metadata (only while Open).
     pub fn update_bounty(
         env: Env,
         creator: Address,
@@ -969,21 +1148,17 @@ impl BountyRegistry {
             .extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND);
     }
 
-    fn escrow_client(env: &Env) -> CoreEscrowClient<'_> {
-        let addr: Address = env
-            .storage()
+    fn get_escrow_addr(env: &Env) -> Address {
+        env.storage()
             .instance()
             .get(&DataKey::CoreEscrow)
-            .expect("not initialized");
-        CoreEscrowClient::new(env, &addr)
+            .expect("not initialized")
     }
 
-    fn rep_client(env: &Env) -> ReputationRegistryClient<'_> {
-        let addr: Address = env
-            .storage()
+    fn get_rep_addr(env: &Env) -> Address {
+        env.storage()
             .instance()
             .get(&DataKey::ReputationRegistry)
-            .expect("not initialized");
-        ReputationRegistryClient::new(env, &addr)
+            .expect("not initialized")
     }
 }

@@ -1,5 +1,15 @@
 use soroban_sdk::{contracttype, Address, BytesN, String};
 
+// Local copy of governance_voting VoteContext for cross-contract serialization.
+#[contracttype]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum VoteContext {
+    CampaignValidation,
+    RetrospectiveGrant,
+    QFRound,
+    HackathonJudging,
+}
+
 #[contracttype]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CampaignStatus {

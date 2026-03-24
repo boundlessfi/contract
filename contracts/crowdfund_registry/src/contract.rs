@@ -5,18 +5,18 @@ use crate::events::{
     MilestoneApproved, MilestoneDisputed, MilestoneOverdue, MilestoneRevisionRequested,
     MilestoneSubmitted, PledgeRecorded, RefundBatchProcessed,
 };
-use crate::storage::{Campaign, CampaignStatus, DataKey, Milestone, MilestoneStatus};
+use crate::storage::{Campaign, CampaignStatus, DataKey, Milestone, MilestoneStatus, VoteContext};
 use boundless_types::ttl::{
     INSTANCE_TTL_EXTEND, INSTANCE_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND, PERSISTENT_TTL_THRESHOLD,
 };
 use boundless_types::ModuleType;
-use core_escrow::CoreEscrowClient;
-use governance_voting::storage::VoteContext;
-use governance_voting::GovernanceVotingClient;
-use reputation_registry::ReputationRegistryClient;
-use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, String, Vec};
+use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, IntoVal, String, Symbol, Val, Vec};
 
 const BACKER_BATCH_SIZE: u32 = 50;
+
+fn sym(env: &Env, name: &str) -> Symbol {
+    Symbol::new(env, name)
+}
 
 #[contract]
 pub struct CrowdfundRegistry;
@@ -107,8 +107,6 @@ impl CrowdfundRegistry {
     // CAMPAIGN CREATION (starts in Draft)
     // ========================================================================
 
-    /// Create a campaign with decomposed milestones. Starts in Draft status.
-    /// Owner must call `submit_for_review` to advance to admin approval workflow.
     pub fn create_campaign(
         env: Env,
         owner: Address,
@@ -151,16 +149,21 @@ impl CrowdfundRegistry {
         env.storage().instance().set(&DataKey::CampaignCount, &count);
 
         // Create escrow pool (0 initial deposit — backers will pledge into it)
-        let escrow_client = Self::escrow_client(&env);
-        let pool_id = escrow_client.create_pool(
-            &owner,
-            &ModuleType::Crowdfund,
-            &count,
-            &0i128,
-            &asset,
-            &deadline,
-            &env.current_contract_address(),
+        let escrow_addr = Self::get_escrow_addr(&env);
+        let pool_args: Vec<Val> = Vec::from_array(
+            &env,
+            [
+                owner.clone().into_val(&env),
+                ModuleType::Crowdfund.into_val(&env),
+                count.into_val(&env),
+                0i128.into_val(&env),
+                asset.clone().into_val(&env),
+                deadline.into_val(&env),
+                env.current_contract_address().into_val(&env),
+            ],
         );
+        let pool_id: BytesN<32> =
+            env.invoke_contract(&escrow_addr, &sym(&env, "create_pool"), pool_args);
 
         // Store milestones decomposed
         for i in 0..ms_count {
@@ -215,7 +218,6 @@ impl CrowdfundRegistry {
     // Draft → Submitted → Validated → Campaigning
     // ========================================================================
 
-    /// Owner submits their draft campaign for admin review.
     pub fn submit_for_review(env: Env, campaign_id: u64) -> Result<(), Error> {
         let key = DataKey::Campaign(campaign_id);
         let mut campaign: Campaign = env
@@ -237,8 +239,6 @@ impl CrowdfundRegistry {
         Ok(())
     }
 
-    /// Admin approves a submitted campaign. Creates a GovernanceVoting session
-    /// for community validation. Campaign moves to Validated once votes pass threshold.
     pub fn approve_campaign(
         env: Env,
         campaign_id: u64,
@@ -260,24 +260,28 @@ impl CrowdfundRegistry {
         }
 
         // Create a governance voting session for community validation
-        let gov_client = Self::gov_client(&env);
-
+        let gov_addr = Self::get_gov_addr(&env);
         let mut options = Vec::new(&env);
         options.push_back(String::from_str(&env, "Approve"));
         options.push_back(String::from_str(&env, "Reject"));
 
         let now = env.ledger().timestamp();
-        let session_id = gov_client.create_session(
-            &env.current_contract_address(),
-            &VoteContext::CampaignValidation,
-            &campaign_id,
-            &options,
-            &now,
-            &(now + voting_duration),
-            &Some(vote_threshold),
-            &None::<u32>,
-            &false,
+        let gov_args: Vec<Val> = Vec::from_array(
+            &env,
+            [
+                env.current_contract_address().into_val(&env),
+                VoteContext::CampaignValidation.into_val(&env),
+                campaign_id.into_val(&env),
+                options.into_val(&env),
+                now.into_val(&env),
+                (now + voting_duration).into_val(&env),
+                Some(vote_threshold).into_val(&env),
+                None::<u32>.into_val(&env),
+                false.into_val(&env),
+            ],
         );
+        let session_id: BytesN<32> =
+            env.invoke_contract(&gov_addr, &sym(&env, "create_session"), gov_args);
 
         campaign.vote_session_id = Some(session_id.clone());
         campaign.status = CampaignStatus::Submitted; // stays Submitted until votes pass
@@ -292,7 +296,6 @@ impl CrowdfundRegistry {
         Ok(session_id)
     }
 
-    /// Admin rejects a submitted campaign. Returns to Draft so owner can revise.
     pub fn reject_campaign(env: Env, campaign_id: u64) -> Result<(), Error> {
         let admin = Self::require_admin(&env)?;
         admin.require_auth();
@@ -316,7 +319,6 @@ impl CrowdfundRegistry {
         Ok(())
     }
 
-    /// Delegates vote to GovernanceVoting. Anyone can vote on an approved campaign's session.
     pub fn vote_campaign(
         env: Env,
         voter: Address,
@@ -333,14 +335,20 @@ impl CrowdfundRegistry {
 
         let session_id = campaign.vote_session_id.ok_or(Error::NoVoteSession)?;
 
-        let gov_client = Self::gov_client(&env);
-        gov_client.cast_vote(&voter, &session_id, &option_id);
+        let gov_addr = Self::get_gov_addr(&env);
+        let args: Vec<Val> = Vec::from_array(
+            &env,
+            [
+                voter.into_val(&env),
+                session_id.into_val(&env),
+                option_id.into_val(&env),
+            ],
+        );
+        env.invoke_contract::<()>(&gov_addr, &sym(&env, "cast_vote"), args);
 
         Ok(())
     }
 
-    /// Permissionless: checks if the voting threshold has been reached.
-    /// If yes, transitions campaign from Submitted → Campaigning.
     pub fn check_vote_threshold(env: Env, campaign_id: u64) -> Result<(), Error> {
         let key = DataKey::Campaign(campaign_id);
         let mut campaign: Campaign = env
@@ -355,8 +363,10 @@ impl CrowdfundRegistry {
 
         let session_id = campaign.vote_session_id.clone().ok_or(Error::NoVoteSession)?;
 
-        let gov_client = Self::gov_client(&env);
-        let reached = gov_client.threshold_reached(&session_id);
+        let gov_addr = Self::get_gov_addr(&env);
+        let args: Vec<Val> = Vec::from_array(&env, [session_id.into_val(&env)]);
+        let reached: bool =
+            env.invoke_contract(&gov_addr, &sym(&env, "threshold_reached"), args);
 
         if !reached {
             return Err(Error::VoteThresholdNotMet);
@@ -394,13 +404,18 @@ impl CrowdfundRegistry {
         }
 
         // Use route_pledge for fee-on-top model
-        let escrow_client = Self::escrow_client(&env);
-        let net = escrow_client.route_pledge(
-            &backer,
-            &campaign.pool_id,
-            &amount,
-            &campaign.asset,
+        let escrow_addr = Self::get_escrow_addr(&env);
+        let pledge_args: Vec<Val> = Vec::from_array(
+            &env,
+            [
+                backer.clone().into_val(&env),
+                campaign.pool_id.clone().into_val(&env),
+                amount.into_val(&env),
+                campaign.asset.clone().into_val(&env),
+            ],
         );
+        let net: i128 =
+            env.invoke_contract(&escrow_addr, &sym(&env, "route_pledge"), pledge_args);
 
         campaign.current_funding = campaign.current_funding.checked_add(net).ok_or(Error::Overflow)?;
 
@@ -428,10 +443,12 @@ impl CrowdfundRegistry {
 
         // Check if funded
         if campaign.current_funding >= campaign.funding_goal {
-            escrow_client.lock_pool(&campaign.pool_id);
+            let lock_args: Vec<Val> =
+                Vec::from_array(&env, [campaign.pool_id.clone().into_val(&env)]);
+            env.invoke_contract::<()>(&escrow_addr, &sym(&env, "lock_pool"), lock_args);
 
             // Define release slots based on milestones
-            let mut slots = Vec::new(&env);
+            let mut slots: Vec<(Address, i128)> = Vec::new(&env);
             for i in 0..campaign.milestone_count {
                 let ms: Milestone = env
                     .storage()
@@ -444,7 +461,14 @@ impl CrowdfundRegistry {
                     / 10000;
                 slots.push_back((campaign.owner.clone(), ms_amount));
             }
-            escrow_client.define_release_slots(&campaign.pool_id, &slots);
+            let slot_args: Vec<Val> = Vec::from_array(
+                &env,
+                [
+                    campaign.pool_id.clone().into_val(&env),
+                    slots.into_val(&env),
+                ],
+            );
+            env.invoke_contract::<()>(&escrow_addr, &sym(&env, "define_release_slots"), slot_args);
 
             campaign.status = CampaignStatus::Funded;
             CampaignFunded { id: campaign_id }.publish(&env);
@@ -543,8 +567,15 @@ impl CrowdfundRegistry {
         env.storage().persistent().set(&ms_key, &ms);
 
         // Release the corresponding escrow slot
-        let escrow_client = Self::escrow_client(&env);
-        escrow_client.release_slot(&campaign.pool_id, &milestone_index);
+        let escrow_addr = Self::get_escrow_addr(&env);
+        let release_args: Vec<Val> = Vec::from_array(
+            &env,
+            [
+                campaign.pool_id.clone().into_val(&env),
+                milestone_index.into_val(&env),
+            ],
+        );
+        env.invoke_contract::<()>(&escrow_addr, &sym(&env, "release_slot"), release_args);
 
         // Check if all milestones are released
         let mut all_done = true;
@@ -564,10 +595,18 @@ impl CrowdfundRegistry {
             campaign.status = CampaignStatus::Completed;
 
             // Record reputation for campaign owner
-            let rep_client = Self::rep_client(&env);
-            rep_client.record_campaign_backed(
-                &env.current_contract_address(),
-                &campaign.owner,
+            let rep_addr = Self::get_rep_addr(&env);
+            let rep_args: Vec<Val> = Vec::from_array(
+                &env,
+                [
+                    env.current_contract_address().into_val(&env),
+                    campaign.owner.clone().into_val(&env),
+                ],
+            );
+            env.invoke_contract::<()>(
+                &rep_addr,
+                &sym(&env, "record_campaign_backed"),
+                rep_args,
             );
         }
 
@@ -607,8 +646,6 @@ impl CrowdfundRegistry {
         Ok(())
     }
 
-    /// Admin requests revision on a submitted or disputed milestone.
-    /// Returns the milestone to Pending so the owner can resubmit.
     pub fn request_milestone_revision(
         env: Env,
         campaign_id: u64,
@@ -644,7 +681,6 @@ impl CrowdfundRegistry {
     // DEADLINE / FAILURE
     // ========================================================================
 
-    /// Permissionless: anyone can call after deadline if not funded.
     pub fn check_deadline(env: Env, campaign_id: u64) -> Result<(), Error> {
         let key = DataKey::Campaign(campaign_id);
         let mut campaign: Campaign = env
@@ -668,7 +704,6 @@ impl CrowdfundRegistry {
         Ok(())
     }
 
-    /// Permissionless batched refund: processes one batch of backers at a time.
     pub fn process_refund_batch(env: Env, campaign_id: u64) -> Result<(), Error> {
         let key = DataKey::Campaign(campaign_id);
         let mut campaign: Campaign = env
@@ -697,8 +732,7 @@ impl CrowdfundRegistry {
             .unwrap_or(Vec::new(&env));
 
         // Build refund list
-        let escrow_client = Self::escrow_client(&env);
-        let mut refund_list = Vec::new(&env);
+        let mut refund_list: Vec<(Address, i128)> = Vec::new(&env);
         let mut count = 0u32;
 
         for backer in batch.iter() {
@@ -712,7 +746,15 @@ impl CrowdfundRegistry {
         }
 
         if !refund_list.is_empty() {
-            escrow_client.refund_backers(&campaign.pool_id, &refund_list);
+            let escrow_addr = Self::get_escrow_addr(&env);
+            let refund_args: Vec<Val> = Vec::from_array(
+                &env,
+                [
+                    campaign.pool_id.clone().into_val(&env),
+                    refund_list.into_val(&env),
+                ],
+            );
+            env.invoke_contract::<()>(&escrow_addr, &sym(&env, "refund_backers"), refund_args);
         }
 
         campaign.refund_progress = batch_idx + 1;
@@ -759,7 +801,6 @@ impl CrowdfundRegistry {
     // GOVERNANCE: DISPUTE & TERMINATION
     // ========================================================================
 
-    /// A backer disputes a submitted milestone.
     pub fn dispute_milestone(
         env: Env,
         disputer: Address,
@@ -799,7 +840,6 @@ impl CrowdfundRegistry {
         Ok(())
     }
 
-    /// Admin terminates a campaign (e.g., due to fraud). Triggers refund flow.
     pub fn terminate_campaign(env: Env, campaign_id: u64) -> Result<(), Error> {
         let admin = Self::require_admin(&env)?;
         admin.require_auth();
@@ -826,8 +866,6 @@ impl CrowdfundRegistry {
         Ok(())
     }
 
-    /// Permissionless: flag a milestone as overdue if campaign is Executing
-    /// and the milestone has been pending for too long (>30 days past funding).
     pub fn flag_overdue_milestone(
         env: Env,
         campaign_id: u64,
@@ -907,30 +945,24 @@ impl CrowdfundRegistry {
             .ok_or(Error::NotInitialized)
     }
 
-    fn escrow_client(env: &Env) -> CoreEscrowClient<'_> {
-        let addr: Address = env
-            .storage()
+    fn get_escrow_addr(env: &Env) -> Address {
+        env.storage()
             .instance()
             .get(&DataKey::CoreEscrow)
-            .expect("not initialized");
-        CoreEscrowClient::new(env, &addr)
+            .expect("not initialized")
     }
 
-    fn rep_client(env: &Env) -> ReputationRegistryClient<'_> {
-        let addr: Address = env
-            .storage()
+    fn get_rep_addr(env: &Env) -> Address {
+        env.storage()
             .instance()
             .get(&DataKey::ReputationRegistry)
-            .expect("not initialized");
-        ReputationRegistryClient::new(env, &addr)
+            .expect("not initialized")
     }
 
-    fn gov_client(env: &Env) -> GovernanceVotingClient<'_> {
-        let addr: Address = env
-            .storage()
+    fn get_gov_addr(env: &Env) -> Address {
+        env.storage()
             .instance()
             .get(&DataKey::GovernanceVoting)
-            .expect("not initialized");
-        GovernanceVotingClient::new(env, &addr)
+            .expect("not initialized")
     }
 }
