@@ -31,4 +31,5 @@ pub enum Error {
     HackathonNotCancellable = 1025,
     TrackNotFound = 1026,
     InvalidTrackStatus = 1027,
+    Overflow = 1028,
 }

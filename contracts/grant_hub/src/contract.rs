@@ -135,7 +135,10 @@ impl GrantHub {
         let mut slots: Vec<(Address, i128)> = Vec::new(&env);
         let milestone_count = milestone_descs.len();
         for (_, pct) in milestone_descs.iter() {
-            let slot_amount = (amount * pct as i128) / 10000;
+            let slot_amount = amount
+                .checked_mul(pct as i128)
+                .ok_or(Error::Overflow)?
+                / 10000;
             slots.push_back((recipient.clone(), slot_amount));
         }
 
@@ -447,8 +450,10 @@ impl GrantHub {
         if total_votes > 0 {
             for (i, opt) in results.iter().enumerate() {
                 if opt.weighted_votes > 0 && (i as u32) < recipients.len() {
-                    let share =
-                        (grant.amount * opt.weighted_votes as i128) / total_votes as i128;
+                    let share = grant.amount
+                        .checked_mul(opt.weighted_votes as i128)
+                        .ok_or(Error::Overflow)?
+                        / total_votes as i128;
                     if share > 0 {
                         let recipient = recipients.get(i as u32).ok_or(Error::InvalidProjectIndex)?;
                         escrow.release_partial(

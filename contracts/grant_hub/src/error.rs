@@ -22,4 +22,5 @@ pub enum Error {
     InvalidProjectIndex = 915,
     CannotCancel = 916,
     NotCreator = 917,
+    Overflow = 918,
 }

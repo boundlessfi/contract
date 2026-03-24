@@ -13,3 +13,5 @@ mod test_hackathon_e2e;
 mod test_cross_module;
 #[cfg(test)]
 mod test_new_features;
+#[cfg(test)]
+mod test_edge_cases;

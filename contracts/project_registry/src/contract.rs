@@ -365,7 +365,10 @@ impl ProjectRegistry {
         if rate == 0 {
             return Ok(0);
         }
-        Ok(budget * (rate as i128) / 10_000)
+        Ok(budget
+            .checked_mul(rate as i128)
+            .ok_or(Error::Overflow)?
+            / 10_000)
     }
 
     /// Lock a deposit for a project. Called by the project owner before posting a bounty/campaign.

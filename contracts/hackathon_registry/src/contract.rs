@@ -551,7 +551,10 @@ impl HackathonRegistry {
                 .get(&DataKey::PrizeTier(hackathon_id, rank))
                 .unwrap();
 
-            let amount = (hackathon.prize_pool * pct as i128) / 10000;
+            let amount = hackathon.prize_pool
+                .checked_mul(pct as i128)
+                .ok_or(Error::Overflow)?
+                / 10000;
             if amount > 0 {
                 esc_client.release_partial(&hackathon.pool_id, &lead, &amount);
             }

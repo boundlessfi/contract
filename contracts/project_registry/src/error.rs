@@ -14,4 +14,5 @@ pub enum Error {
     InsufficientDeposit = 607,
     NoDepositHeld = 608,
     InvalidAmount = 609,
+    Overflow = 610,
 }

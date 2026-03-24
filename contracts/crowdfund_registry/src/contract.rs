@@ -2,8 +2,8 @@ use crate::error::Error;
 use crate::events::{
     CampaignApproved, CampaignCancelled, CampaignCreated, CampaignFailed, CampaignFunded,
     CampaignRejected, CampaignSubmittedForReview, CampaignTerminated, CampaignValidated,
-    MilestoneApproved, MilestoneDisputed, MilestoneOverdue, MilestoneSubmitted, PledgeRecorded,
-    RefundBatchProcessed,
+    MilestoneApproved, MilestoneDisputed, MilestoneOverdue, MilestoneRevisionRequested,
+    MilestoneSubmitted, PledgeRecorded, RefundBatchProcessed,
 };
 use crate::storage::{Campaign, CampaignStatus, DataKey, Milestone, MilestoneStatus};
 use boundless_types::ttl::{
@@ -407,9 +407,10 @@ impl CrowdfundRegistry {
         // Track backer pledge amount
         let pledge_key = DataKey::Pledge(campaign_id, backer.clone());
         let existing: i128 = env.storage().persistent().get(&pledge_key).unwrap_or(0);
+        let new_pledge = existing.checked_add(net).ok_or(Error::Overflow)?;
         env.storage()
             .persistent()
-            .set(&pledge_key, &(existing + net));
+            .set(&pledge_key, &new_pledge);
 
         // Add backer to batch list (if new)
         if existing == 0 {
@@ -437,8 +438,10 @@ impl CrowdfundRegistry {
                     .persistent()
                     .get(&DataKey::CampaignMilestone(campaign_id, i))
                     .unwrap();
-                let ms_amount =
-                    (campaign.current_funding * ms.pct as i128) / 10000;
+                let ms_amount = campaign.current_funding
+                    .checked_mul(ms.pct as i128)
+                    .ok_or(Error::Overflow)?
+                    / 10000;
                 slots.push_back((campaign.owner.clone(), ms_amount));
             }
             escrow_client.define_release_slots(&campaign.pool_id, &slots);
@@ -600,6 +603,39 @@ impl CrowdfundRegistry {
 
         ms.status = MilestoneStatus::Rejected;
         env.storage().persistent().set(&ms_key, &ms);
+
+        Ok(())
+    }
+
+    /// Admin requests revision on a submitted or disputed milestone.
+    /// Returns the milestone to Pending so the owner can resubmit.
+    pub fn request_milestone_revision(
+        env: Env,
+        campaign_id: u64,
+        milestone_index: u32,
+    ) -> Result<(), Error> {
+        let admin = Self::require_admin(&env)?;
+        admin.require_auth();
+
+        let ms_key = DataKey::CampaignMilestone(campaign_id, milestone_index);
+        let mut ms: Milestone = env
+            .storage()
+            .persistent()
+            .get(&ms_key)
+            .ok_or(Error::MilestoneNotFound)?;
+
+        if ms.status != MilestoneStatus::Submitted && ms.status != MilestoneStatus::Disputed {
+            return Err(Error::MilestoneNotSubmitted);
+        }
+
+        ms.status = MilestoneStatus::Pending;
+        env.storage().persistent().set(&ms_key, &ms);
+
+        MilestoneRevisionRequested {
+            campaign_id,
+            milestone_id: milestone_index,
+        }
+        .publish(&env);
 
         Ok(())
     }
