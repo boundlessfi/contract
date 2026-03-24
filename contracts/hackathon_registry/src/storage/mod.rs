@@ -41,6 +41,18 @@ pub struct Submission {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SponsoredTrack {
+    pub track_id: u32,
+    pub hackathon_id: u64,
+    pub sponsor: Address,
+    pub track_name: String,
+    pub prize_amount: i128,
+    pub asset: Address,
+    pub pool_id: BytesN<32>,
+}
+
+#[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
     Admin,
@@ -54,4 +66,6 @@ pub enum DataKey {
     SubmissionIndex(u64, u32),
     JudgeScore(u64, Address, Address),
     PrizeTier(u64, u32),
+    HackathonTrack(u64, u32),
+    HackathonTrackCount(u64),
 }

@@ -1,9 +1,13 @@
 use crate::error::Error;
 use crate::events::{
-    CampaignCancelled, CampaignCreated, CampaignFailed, CampaignFunded, MilestoneApproved,
-    MilestoneSubmitted, PledgeRecorded, RefundBatchProcessed,
+    CampaignCancelled, CampaignCreated, CampaignFailed, CampaignFunded, CampaignTerminated,
+    MilestoneApproved, MilestoneDisputed, MilestoneOverdue, MilestoneSubmitted, PledgeRecorded,
+    RefundBatchProcessed,
 };
 use crate::storage::{Campaign, CampaignStatus, DataKey, Milestone, MilestoneStatus};
+use boundless_types::ttl::{
+    INSTANCE_TTL_EXTEND, INSTANCE_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND, PERSISTENT_TTL_THRESHOLD,
+};
 use boundless_types::ModuleType;
 use core_escrow::CoreEscrowClient;
 use reputation_registry::ReputationRegistryClient;
@@ -38,6 +42,7 @@ impl CrowdfundRegistry {
             .instance()
             .set(&DataKey::ReputationRegistry, &reputation_registry);
         env.storage().instance().set(&DataKey::CampaignCount, &0u64);
+        Self::extend_instance_ttl(&env);
         Ok(())
     }
 
@@ -46,10 +51,15 @@ impl CrowdfundRegistry {
     // ========================================================================
 
     pub fn get_campaign(env: Env, campaign_id: u64) -> Result<Campaign, Error> {
-        env.storage()
+        let key = DataKey::Campaign(campaign_id);
+        let campaign = env
+            .storage()
             .persistent()
-            .get(&DataKey::Campaign(campaign_id))
-            .ok_or(Error::CampaignNotFound)
+            .get(&key)
+            .ok_or(Error::CampaignNotFound)?;
+        Self::extend_persistent_ttl(&env, &key);
+        Self::extend_instance_ttl(&env);
+        Ok(campaign)
     }
 
     pub fn get_milestone(
@@ -166,9 +176,12 @@ impl CrowdfundRegistry {
             refund_progress: 0,
         };
 
+        let camp_key = DataKey::Campaign(count);
         env.storage()
             .persistent()
-            .set(&DataKey::Campaign(count), &campaign);
+            .set(&camp_key, &campaign);
+        Self::extend_persistent_ttl(&env, &camp_key);
+        Self::extend_instance_ttl(&env);
 
         CampaignCreated {
             id: count,
@@ -259,6 +272,8 @@ impl CrowdfundRegistry {
         }
 
         env.storage().persistent().set(&key, &campaign);
+        Self::extend_persistent_ttl(&env, &key);
+        Self::extend_instance_ttl(&env);
 
         PledgeRecorded {
             campaign_id,
@@ -529,6 +544,123 @@ impl CrowdfundRegistry {
     }
 
     // ========================================================================
+    // GOVERNANCE: DISPUTE & TERMINATION
+    // ========================================================================
+
+    /// A backer disputes a submitted milestone.
+    pub fn dispute_milestone(
+        env: Env,
+        disputer: Address,
+        campaign_id: u64,
+        milestone_index: u32,
+    ) -> Result<(), Error> {
+        disputer.require_auth();
+
+        // Verify disputer is a backer
+        let pledge_key = DataKey::Pledge(campaign_id, disputer.clone());
+        let pledge_amount: i128 = env.storage().persistent().get(&pledge_key).unwrap_or(0);
+        if pledge_amount <= 0 {
+            return Err(Error::NotBacker);
+        }
+
+        let ms_key = DataKey::CampaignMilestone(campaign_id, milestone_index);
+        let mut ms: Milestone = env
+            .storage()
+            .persistent()
+            .get(&ms_key)
+            .ok_or(Error::MilestoneNotFound)?;
+
+        if ms.status != MilestoneStatus::Submitted {
+            return Err(Error::MilestoneNotSubmitted);
+        }
+
+        ms.status = MilestoneStatus::Disputed;
+        env.storage().persistent().set(&ms_key, &ms);
+
+        MilestoneDisputed {
+            campaign_id,
+            milestone_id: milestone_index,
+            disputer,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    /// Admin terminates a campaign (e.g., due to fraud). Triggers refund flow.
+    pub fn terminate_campaign(env: Env, campaign_id: u64) -> Result<(), Error> {
+        let admin = Self::require_admin(&env)?;
+        admin.require_auth();
+
+        let key = DataKey::Campaign(campaign_id);
+        let mut campaign: Campaign = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::CampaignNotFound)?;
+
+        if campaign.status == CampaignStatus::Completed
+            || campaign.status == CampaignStatus::Cancelled
+            || campaign.status == CampaignStatus::Failed
+        {
+            return Err(Error::InvalidState);
+        }
+
+        campaign.status = CampaignStatus::Cancelled;
+        campaign.refund_progress = 0;
+        env.storage().persistent().set(&key, &campaign);
+
+        CampaignTerminated { id: campaign_id }.publish(&env);
+        Ok(())
+    }
+
+    /// Permissionless: flag a milestone as overdue if campaign is Executing
+    /// and the milestone has been pending for too long (>30 days past funding).
+    pub fn flag_overdue_milestone(
+        env: Env,
+        campaign_id: u64,
+        milestone_index: u32,
+    ) -> Result<(), Error> {
+        let key = DataKey::Campaign(campaign_id);
+        let campaign: Campaign = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::CampaignNotFound)?;
+
+        if campaign.status != CampaignStatus::Funded
+            && campaign.status != CampaignStatus::Executing
+        {
+            return Err(Error::InvalidState);
+        }
+
+        let ms_key = DataKey::CampaignMilestone(campaign_id, milestone_index);
+        let ms: Milestone = env
+            .storage()
+            .persistent()
+            .get(&ms_key)
+            .ok_or(Error::MilestoneNotFound)?;
+
+        if ms.status != MilestoneStatus::Pending {
+            return Err(Error::MilestoneNotPending);
+        }
+
+        // Check if 30 days have passed since deadline (which marks funding time)
+        let overdue_threshold = campaign.deadline + 30 * 86_400;
+        if env.ledger().timestamp() <= overdue_threshold {
+            return Err(Error::MilestoneNotOverdue);
+        }
+
+        MilestoneOverdue {
+            campaign_id,
+            milestone_id: milestone_index,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    // ========================================================================
     // ADMIN
     // ========================================================================
 
@@ -536,12 +668,25 @@ impl CrowdfundRegistry {
         let admin = Self::require_admin(&env)?;
         admin.require_auth();
         env.deployer().update_current_contract_wasm(new_wasm_hash);
+        Self::extend_instance_ttl(&env);
         Ok(())
     }
 
     // ========================================================================
     // INTERNAL HELPERS
     // ========================================================================
+
+    fn extend_instance_ttl(env: &Env) {
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND);
+    }
+
+    fn extend_persistent_ttl(env: &Env, key: &DataKey) {
+        env.storage()
+            .persistent()
+            .extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND);
+    }
 
     fn require_admin(env: &Env) -> Result<Address, Error> {
         env.storage()

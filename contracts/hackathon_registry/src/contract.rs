@@ -1,5 +1,8 @@
 use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, String, Vec};
 
+use boundless_types::ttl::{
+    INSTANCE_TTL_EXTEND, INSTANCE_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND, PERSISTENT_TTL_THRESHOLD,
+};
 use boundless_types::ModuleType;
 use core_escrow::CoreEscrowClient;
 use reputation_registry::ReputationRegistryClient;
@@ -7,9 +10,9 @@ use reputation_registry::ReputationRegistryClient;
 use crate::error::Error;
 use crate::events::{
     HackathonCancelled, HackathonCreated, PrizesDistributed, ProjectSubmitted, ScoreRecorded,
-    TeamRegistered,
+    SponsoredTrackAdded, TeamRegistered, TrackPrizesDistributed,
 };
-use crate::storage::{DataKey, Hackathon, HackathonStatus, Submission};
+use crate::storage::{DataKey, Hackathon, HackathonStatus, SponsoredTrack, Submission};
 
 #[contract]
 pub struct HackathonRegistry;
@@ -40,6 +43,7 @@ impl HackathonRegistry {
         env.storage()
             .instance()
             .set(&DataKey::HackathonCount, &0u64);
+        Self::extend_instance_ttl(&env);
         Ok(())
     }
 
@@ -134,9 +138,12 @@ impl HackathonRegistry {
             max_participants,
         };
 
+        let hack_key = DataKey::Hackathon(count);
         env.storage()
             .persistent()
-            .set(&DataKey::Hackathon(count), &hackathon);
+            .set(&hack_key, &hackathon);
+        Self::extend_persistent_ttl(&env, &hack_key);
+        Self::extend_instance_ttl(&env);
 
         HackathonCreated {
             id: count,
@@ -277,9 +284,12 @@ impl HackathonRegistry {
             .set(&DataKey::SubmissionIndex(hackathon_id, idx), &team_lead.clone());
 
         hackathon.submission_count += 1;
+        let hack_key = DataKey::Hackathon(hackathon_id);
         env.storage()
             .persistent()
-            .set(&DataKey::Hackathon(hackathon_id), &hackathon);
+            .set(&hack_key, &hackathon);
+        Self::extend_persistent_ttl(&env, &hack_key);
+        Self::extend_instance_ttl(&env);
 
         TeamRegistered {
             hackathon_id,
@@ -628,6 +638,170 @@ impl HackathonRegistry {
             .ok_or(Error::NotInitialized)?;
         admin.require_auth();
         env.deployer().update_current_contract_wasm(new_wasm_hash);
+        Self::extend_instance_ttl(&env);
+        Ok(())
+    }
+
+    // ========================================================================
+    // SPONSORED TRACKS
+    // ========================================================================
+
+    pub fn add_sponsored_track(
+        env: Env,
+        hackathon_id: u64,
+        sponsor: Address,
+        track_name: String,
+        prize_amount: i128,
+        asset: Address,
+    ) -> Result<u32, Error> {
+        sponsor.require_auth();
+
+        let hackathon = Self::load_hackathon(&env, hackathon_id)?;
+
+        // Must be in Registration or Submission (open) status
+        if hackathon.status != HackathonStatus::Registration
+            && hackathon.status != HackathonStatus::Submission
+        {
+            return Err(Error::InvalidTrackStatus);
+        }
+
+        // Get and increment track count
+        let track_count_key = DataKey::HackathonTrackCount(hackathon_id);
+        let track_id: u32 = env
+            .storage()
+            .persistent()
+            .get(&track_count_key)
+            .unwrap_or(0);
+
+        // Create escrow pool for this track
+        let esc_addr: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::CoreEscrow)
+            .ok_or(Error::NotInitialized)?;
+        let esc_client = CoreEscrowClient::new(&env, &esc_addr);
+
+        let derived_module_id = hackathon_id * 1000 + track_id as u64;
+        let pool_id = esc_client.create_pool(
+            &sponsor,
+            &ModuleType::Hackathon,
+            &derived_module_id,
+            &prize_amount,
+            &asset,
+            &hackathon.judging_deadline,
+            &env.current_contract_address(),
+        );
+
+        // Lock the pool immediately
+        esc_client.lock_pool(&pool_id);
+
+        // Store track info
+        let track = SponsoredTrack {
+            track_id,
+            hackathon_id,
+            sponsor: sponsor.clone(),
+            track_name,
+            prize_amount,
+            asset,
+            pool_id,
+        };
+
+        let track_key = DataKey::HackathonTrack(hackathon_id, track_id);
+        env.storage().persistent().set(&track_key, &track);
+        Self::extend_persistent_ttl(&env, &track_key);
+
+        // Increment track count
+        env.storage()
+            .persistent()
+            .set(&track_count_key, &(track_id + 1));
+
+        Self::extend_instance_ttl(&env);
+
+        SponsoredTrackAdded {
+            hackathon_id,
+            track_id,
+            sponsor,
+        }
+        .publish(&env);
+
+        Ok(track_id)
+    }
+
+    pub fn distribute_track_prizes(
+        env: Env,
+        hackathon_id: u64,
+        track_id: u32,
+        winners: Vec<(Address, i128)>,
+    ) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+
+        let hackathon = Self::load_hackathon(&env, hackathon_id)?;
+
+        // Must be in Judging or Completed status
+        if hackathon.status != HackathonStatus::Judging
+            && hackathon.status != HackathonStatus::Completed
+        {
+            return Err(Error::InvalidStatus);
+        }
+
+        // Load the track
+        let track_key = DataKey::HackathonTrack(hackathon_id, track_id);
+        let track: SponsoredTrack = env
+            .storage()
+            .persistent()
+            .get(&track_key)
+            .ok_or(Error::TrackNotFound)?;
+
+        let esc_addr: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::CoreEscrow)
+            .ok_or(Error::NotInitialized)?;
+        let esc_client = CoreEscrowClient::new(&env, &esc_addr);
+
+        let rep_addr: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::ReputationRegistry)
+            .ok_or(Error::NotInitialized)?;
+        let rep_client = ReputationRegistryClient::new(&env, &rep_addr);
+
+        // Distribute prizes to each winner
+        for i in 0..winners.len() {
+            let (winner, amount) = winners.get(i).unwrap();
+
+            if amount > 0 {
+                esc_client.release_partial(&track.pool_id, &winner, &amount);
+            }
+
+            // Record reputation for track winner
+            let is_win = i == 0;
+            let points = if i == 0 {
+                100u32
+            } else if i == 1 {
+                50u32
+            } else {
+                25u32
+            };
+            rep_client.record_hackathon_result(
+                &env.current_contract_address(),
+                &winner,
+                &points,
+                &is_win,
+            );
+        }
+
+        TrackPrizesDistributed {
+            hackathon_id,
+            track_id,
+        }
+        .publish(&env);
+
         Ok(())
     }
 
@@ -636,7 +810,15 @@ impl HackathonRegistry {
     // ========================================================================
 
     pub fn get_hackathon(env: Env, id: u64) -> Result<Hackathon, Error> {
-        Self::load_hackathon(&env, id)
+        let key = DataKey::Hackathon(id);
+        let hackathon = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::HackathonNotFound)?;
+        Self::extend_persistent_ttl(&env, &key);
+        Self::extend_instance_ttl(&env);
+        Ok(hackathon)
     }
 
     pub fn get_submission(env: Env, hackathon_id: u64, team_lead: Address) -> Result<Submission, Error> {
@@ -649,6 +831,18 @@ impl HackathonRegistry {
     // ========================================================================
     // INTERNAL
     // ========================================================================
+
+    fn extend_instance_ttl(env: &Env) {
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND);
+    }
+
+    fn extend_persistent_ttl(env: &Env, key: &DataKey) {
+        env.storage()
+            .persistent()
+            .extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND);
+    }
 
     fn load_hackathon(env: &Env, id: u64) -> Result<Hackathon, Error> {
         env.storage()

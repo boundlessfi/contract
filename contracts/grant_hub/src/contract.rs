@@ -1,5 +1,8 @@
 use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, String, Vec};
 
+use boundless_types::ttl::{
+    INSTANCE_TTL_EXTEND, INSTANCE_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND, PERSISTENT_TTL_THRESHOLD,
+};
 use boundless_types::ModuleType;
 use core_escrow::CoreEscrowClient;
 use governance_voting::storage::VoteContext;
@@ -43,6 +46,7 @@ impl GrantHub {
             .instance()
             .set(&DataKey::GovernanceVoting, &governance_voting);
         env.storage().instance().set(&DataKey::GrantCount, &0u64);
+        Self::extend_instance_ttl(&env);
         Ok(())
     }
 
@@ -51,10 +55,15 @@ impl GrantHub {
     // ========================================================================
 
     pub fn get_grant(env: Env, grant_id: u64) -> Result<Grant, Error> {
-        env.storage()
+        let key = DataKey::Grant(grant_id);
+        let grant = env
+            .storage()
             .persistent()
-            .get(&DataKey::Grant(grant_id))
-            .ok_or(Error::GrantNotFound)
+            .get(&key)
+            .ok_or(Error::GrantNotFound)?;
+        Self::extend_persistent_ttl(&env, &key);
+        Self::extend_instance_ttl(&env);
+        Ok(grant)
     }
 
     pub fn get_milestone(
@@ -159,9 +168,12 @@ impl GrantHub {
             created_at: env.ledger().timestamp(),
         };
 
+        let grant_key = DataKey::Grant(count);
         env.storage()
             .persistent()
-            .set(&DataKey::Grant(count), &grant);
+            .set(&grant_key, &grant);
+        Self::extend_persistent_ttl(&env, &grant_key);
+        Self::extend_instance_ttl(&env);
 
         GrantCreated {
             id: count,
@@ -370,9 +382,12 @@ impl GrantHub {
             created_at: env.ledger().timestamp(),
         };
 
+        let grant_key = DataKey::Grant(count);
         env.storage()
             .persistent()
-            .set(&DataKey::Grant(count), &grant);
+            .set(&grant_key, &grant);
+        Self::extend_persistent_ttl(&env, &grant_key);
+        Self::extend_instance_ttl(&env);
 
         GrantCreated {
             id: count,
@@ -531,9 +546,12 @@ impl GrantHub {
             created_at: env.ledger().timestamp(),
         };
 
+        let grant_key = DataKey::Grant(count);
         env.storage()
             .persistent()
-            .set(&DataKey::Grant(count), &grant);
+            .set(&grant_key, &grant);
+        Self::extend_persistent_ttl(&env, &grant_key);
+        Self::extend_instance_ttl(&env);
 
         GrantCreated {
             id: count,
@@ -653,8 +671,72 @@ impl GrantHub {
     }
 
     // ========================================================================
+    // CANCEL GRANT
+    // ========================================================================
+
+    pub fn cancel_grant(env: Env, creator: Address, grant_id: u64) -> Result<(), Error> {
+        creator.require_auth();
+
+        let mut grant: Grant = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Grant(grant_id))
+            .ok_or(Error::GrantNotFound)?;
+
+        if grant.creator != creator {
+            return Err(Error::NotCreator);
+        }
+
+        if grant.status != GrantStatus::Pending && grant.status != GrantStatus::Active {
+            return Err(Error::CannotCancel);
+        }
+
+        let escrow = Self::escrow_client(&env);
+        escrow.refund_all(&grant.pool_id);
+
+        grant.status = GrantStatus::Cancelled;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Grant(grant_id), &grant);
+
+        Self::extend_instance_ttl(&env);
+
+        Ok(())
+    }
+
+    // ========================================================================
+    // UPGRADE
+    // ========================================================================
+
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+        Self::extend_instance_ttl(&env);
+
+        Ok(())
+    }
+
+    // ========================================================================
     // INTERNAL HELPERS
     // ========================================================================
+
+    fn extend_instance_ttl(env: &Env) {
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND);
+    }
+
+    fn extend_persistent_ttl(env: &Env, key: &DataKey) {
+        env.storage()
+            .persistent()
+            .extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND);
+    }
 
     fn next_grant_id(env: &Env) -> u64 {
         let mut count: u64 = env

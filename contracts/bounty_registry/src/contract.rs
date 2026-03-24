@@ -6,6 +6,9 @@ use crate::events::{
 use crate::storage::{
     Application, ApplicationStatus, Bounty, BountyStatus, BountyType, DataKey,
 };
+use boundless_types::ttl::{
+    INSTANCE_TTL_EXTEND, INSTANCE_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND, PERSISTENT_TTL_THRESHOLD,
+};
 use boundless_types::{ActivityCategory, ModuleType};
 use core_escrow::CoreEscrowClient;
 use reputation_registry::ReputationRegistryClient;
@@ -38,6 +41,7 @@ impl BountyRegistry {
             .instance()
             .set(&DataKey::ReputationRegistry, &reputation_registry);
         env.storage().instance().set(&DataKey::BountyCount, &0u64);
+        Self::extend_instance_ttl(&env);
         Ok(())
     }
 
@@ -46,10 +50,15 @@ impl BountyRegistry {
     // ========================================================================
 
     pub fn get_bounty(env: Env, bounty_id: u64) -> Result<Bounty, Error> {
-        env.storage()
+        let key = DataKey::Bounty(bounty_id);
+        let bounty = env
+            .storage()
             .persistent()
-            .get(&DataKey::Bounty(bounty_id))
-            .ok_or(Error::BountyNotFound)
+            .get(&key)
+            .ok_or(Error::BountyNotFound)?;
+        Self::extend_persistent_ttl(&env, &key);
+        Self::extend_instance_ttl(&env);
+        Ok(bounty)
     }
 
     pub fn get_application(
@@ -136,9 +145,12 @@ impl BountyRegistry {
             winner_count: 0,
         };
 
+        let key = DataKey::Bounty(count);
         env.storage()
             .persistent()
-            .set(&DataKey::Bounty(count), &bounty);
+            .set(&key, &bounty);
+        Self::extend_persistent_ttl(&env, &key);
+        Self::extend_instance_ttl(&env);
 
         BountyCreated {
             bounty_id: count,
@@ -194,6 +206,8 @@ impl BountyRegistry {
         bounty.assignee = Some(contributor.clone());
         bounty.status = BountyStatus::InProgress;
         env.storage().persistent().set(&key, &bounty);
+        Self::extend_persistent_ttl(&env, &key);
+        Self::extend_instance_ttl(&env);
 
         BountyClaimed {
             bounty_id,
@@ -311,6 +325,8 @@ impl BountyRegistry {
             status: ApplicationStatus::Pending,
         };
         env.storage().persistent().set(&app_key, &app);
+        Self::extend_persistent_ttl(&env, &app_key);
+        Self::extend_instance_ttl(&env);
 
         // Track applicant index for credit restoration later
         let app_count: u32 = env
@@ -734,6 +750,55 @@ impl BountyRegistry {
     }
 
     // ========================================================================
+    // FCFS AUTO-RELEASE
+    // ========================================================================
+
+    /// Permissionless: auto-releases escrow to the FCFS assignee if 7 days
+    /// have passed after the bounty deadline.
+    pub fn auto_release_check(env: Env, bounty_id: u64) -> Result<(), Error> {
+        let key = DataKey::Bounty(bounty_id);
+        let mut bounty: Bounty = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::BountyNotFound)?;
+
+        if bounty.bounty_type != BountyType::FCFS {
+            return Err(Error::NotFCFSType);
+        }
+        if bounty.status != BountyStatus::InProgress {
+            return Err(Error::NotInProgress);
+        }
+
+        // 7 days = 604_800 seconds after the deadline
+        if env.ledger().timestamp() <= bounty.deadline + 604_800 {
+            return Err(Error::AutoReleaseNotReady);
+        }
+
+        let winner = bounty.assignee.clone().ok_or(Error::NotAssignee)?;
+
+        // Release escrow slot 0
+        let escrow_client = Self::escrow_client(&env);
+        escrow_client.release_slot(&bounty.escrow_pool_id, &0);
+
+        // Record reputation with default 50 points for auto-release
+        let rep_client = Self::rep_client(&env);
+        let contract_addr = env.current_contract_address();
+        rep_client.record_completion(&contract_addr, &winner, &bounty.category, &50);
+
+        // Award 1 credit
+        rep_client.award_credits(&contract_addr, &winner, &1);
+
+        bounty.status = BountyStatus::Completed;
+        bounty.winner_count = 1;
+        env.storage().persistent().set(&key, &bounty);
+        Self::extend_persistent_ttl(&env, &key);
+        Self::extend_instance_ttl(&env);
+
+        Ok(())
+    }
+
+    // ========================================================================
     // COMMON OPERATIONS
     // ========================================================================
 
@@ -884,12 +949,25 @@ impl BountyRegistry {
             .ok_or(Error::NotInitialized)?;
         admin.require_auth();
         env.deployer().update_current_contract_wasm(new_wasm_hash);
+        Self::extend_instance_ttl(&env);
         Ok(())
     }
 
     // ========================================================================
     // INTERNAL HELPERS
     // ========================================================================
+
+    fn extend_instance_ttl(env: &Env) {
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND);
+    }
+
+    fn extend_persistent_ttl(env: &Env, key: &DataKey) {
+        env.storage()
+            .persistent()
+            .extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND);
+    }
 
     fn escrow_client(env: &Env) -> CoreEscrowClient<'_> {
         let addr: Address = env

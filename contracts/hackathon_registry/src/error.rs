@@ -29,4 +29,6 @@ pub enum Error {
     JudgeNotFound = 1023,
     AlreadyDisqualified = 1024,
     HackathonNotCancellable = 1025,
+    TrackNotFound = 1026,
+    InvalidTrackStatus = 1027,
 }

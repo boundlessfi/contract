@@ -1,4 +1,4 @@
-use soroban_sdk::{contractevent, Address};
+use soroban_sdk::{contractevent, Address, String};
 
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -40,4 +40,21 @@ pub struct CreditsRecharged {
     #[topic]
     pub user: Address,
     pub remaining: u32,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FraudRecorded {
+    #[topic]
+    pub contributor: Address,
+    pub overall_score: u32,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CommunityBonusAdded {
+    #[topic]
+    pub contributor: Address,
+    pub reason: String,
+    pub points: u32,
 }

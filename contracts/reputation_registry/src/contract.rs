@@ -1,9 +1,15 @@
 use soroban_sdk::{contract, contractimpl, Address, Env, Map, String};
 
+use boundless_types::ttl::{
+    INSTANCE_TTL_EXTEND, INSTANCE_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND, PERSISTENT_TTL_THRESHOLD,
+};
 use boundless_types::ActivityCategory;
 
 use crate::error::Error;
-use crate::events::{CreditsAwarded, CreditsRecharged, CreditsSpent, ModuleAuthorized, ScoreUpdated};
+use crate::events::{
+    CommunityBonusAdded, CreditsAwarded, CreditsRecharged, CreditsSpent, FraudRecorded,
+    ModuleAuthorized, ScoreUpdated,
+};
 use crate::storage::{ContributorProfile, CreditData, DataKey};
 
 const RECHARGE_AMOUNT: u32 = 3;
@@ -27,6 +33,7 @@ impl ReputationRegistry {
         admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Version, &1u32);
+        Self::extend_instance_ttl(&env);
         Ok(())
     }
 
@@ -60,12 +67,16 @@ impl ReputationRegistry {
         };
 
         env.storage().persistent().set(&key, &profile);
+        Self::extend_persistent_ttl(&env, &key);
 
         // Initialize credits
+        let credit_key = DataKey::CreditData(contributor);
         let credits = CreditData::new(now);
         env.storage()
             .persistent()
-            .set(&DataKey::CreditData(contributor), &credits);
+            .set(&credit_key, &credits);
+        Self::extend_persistent_ttl(&env, &credit_key);
+        Self::extend_instance_ttl(&env);
 
         Ok(())
     }
@@ -88,10 +99,15 @@ impl ReputationRegistry {
     }
 
     pub fn get_profile(env: Env, contributor: Address) -> Result<ContributorProfile, Error> {
-        env.storage()
+        let key = DataKey::Profile(contributor);
+        let profile = env
+            .storage()
             .persistent()
-            .get(&DataKey::Profile(contributor))
-            .ok_or(Error::ProfileNotFound)
+            .get(&key)
+            .ok_or(Error::ProfileNotFound)?;
+        Self::extend_persistent_ttl(&env, &key);
+        Self::extend_instance_ttl(&env);
+        Ok(profile)
     }
 
     pub fn get_level(env: Env, contributor: Address) -> Result<u32, Error> {
@@ -114,6 +130,26 @@ impl ReputationRegistry {
             .get(&DataKey::Profile(contributor))
             .ok_or(Error::ProfileNotFound)?;
         Ok(profile.level >= min_level)
+    }
+
+    /// Check requirements including optional category skill rating.
+    pub fn meets_skill_requirements(
+        env: Env,
+        contributor: Address,
+        min_level: u32,
+        required_category: ActivityCategory,
+        min_category_score: u32,
+    ) -> Result<bool, Error> {
+        let profile: ContributorProfile = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Profile(contributor))
+            .ok_or(Error::ProfileNotFound)?;
+        if profile.level < min_level {
+            return Ok(false);
+        }
+        let cat_score = profile.category_scores.get(required_category).unwrap_or(0);
+        Ok(cat_score >= min_category_score)
     }
 
     // ========================================================================
@@ -164,6 +200,8 @@ impl ReputationRegistry {
 
         profile.level = Self::compute_level(profile.overall_score);
         env.storage().persistent().set(&key, &profile);
+        Self::extend_persistent_ttl(&env, &key);
+        Self::extend_instance_ttl(&env);
 
         ScoreUpdated { contributor: contributor.clone(), overall_score: profile.overall_score, level: profile.level }.publish(&env);
         Ok(())
@@ -250,6 +288,120 @@ impl ReputationRegistry {
         Ok(())
     }
 
+    /// Record a contributor abandoning a bounty/task. Called by authorized modules.
+    /// Deducts 10 reputation points.
+    pub fn record_abandonment(
+        env: Env,
+        module: Address,
+        contributor: Address,
+    ) -> Result<(), Error> {
+        module.require_auth();
+        Self::require_authorized(&env, &module)?;
+
+        let key = DataKey::Profile(contributor.clone());
+        let mut profile: ContributorProfile = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::ProfileNotFound)?;
+
+        profile.overall_score = profile.overall_score.saturating_sub(10);
+        profile.level = Self::compute_level(profile.overall_score);
+        env.storage().persistent().set(&key, &profile);
+
+        ScoreUpdated {
+            contributor,
+            overall_score: profile.overall_score,
+            level: profile.level,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Record a late delivery. Called by authorized modules.
+    /// Deducts 5 reputation points.
+    pub fn record_late_delivery(
+        env: Env,
+        module: Address,
+        contributor: Address,
+    ) -> Result<(), Error> {
+        module.require_auth();
+        Self::require_authorized(&env, &module)?;
+
+        let key = DataKey::Profile(contributor.clone());
+        let mut profile: ContributorProfile = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::ProfileNotFound)?;
+
+        profile.overall_score = profile.overall_score.saturating_sub(5);
+        profile.level = Self::compute_level(profile.overall_score);
+        env.storage().persistent().set(&key, &profile);
+
+        ScoreUpdated {
+            contributor,
+            overall_score: profile.overall_score,
+            level: profile.level,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Record fraud. Admin-only. Deducts 100 reputation points.
+    pub fn record_fraud(env: Env, contributor: Address) -> Result<(), Error> {
+        let admin = Self::require_admin(&env)?;
+        admin.require_auth();
+
+        let key = DataKey::Profile(contributor.clone());
+        let mut profile: ContributorProfile = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::ProfileNotFound)?;
+
+        profile.overall_score = profile.overall_score.saturating_sub(100);
+        profile.level = Self::compute_level(profile.overall_score);
+        env.storage().persistent().set(&key, &profile);
+
+        FraudRecorded {
+            contributor,
+            overall_score: profile.overall_score,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Add community bonus points. Admin-only.
+    pub fn add_community_bonus(
+        env: Env,
+        contributor: Address,
+        reason: String,
+        points: u32,
+    ) -> Result<(), Error> {
+        let admin = Self::require_admin(&env)?;
+        admin.require_auth();
+
+        let key = DataKey::Profile(contributor.clone());
+        let mut profile: ContributorProfile = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::ProfileNotFound)?;
+
+        profile.overall_score += points;
+        profile.level = Self::compute_level(profile.overall_score);
+        env.storage().persistent().set(&key, &profile);
+
+        CommunityBonusAdded {
+            contributor,
+            reason,
+            points,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
     // ========================================================================
     // SPARK CREDITS (merged from SparkCredits contract)
     // ========================================================================
@@ -272,6 +424,8 @@ impl ReputationRegistry {
         credits.credits -= 1;
         credits.total_spent += 1;
         env.storage().persistent().set(&key, &credits);
+        Self::extend_persistent_ttl(&env, &key);
+        Self::extend_instance_ttl(&env);
 
         CreditsSpent { user, remaining: credits.credits }.publish(&env);
         Ok(true)
@@ -386,12 +540,25 @@ impl ReputationRegistry {
         let admin = Self::require_admin(&env)?;
         admin.require_auth();
         env.deployer().update_current_contract_wasm(new_wasm_hash);
+        Self::extend_instance_ttl(&env);
         Ok(())
     }
 
     // ========================================================================
     // INTERNAL HELPERS
     // ========================================================================
+
+    fn extend_instance_ttl(env: &Env) {
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND);
+    }
+
+    fn extend_persistent_ttl(env: &Env, key: &DataKey) {
+        env.storage()
+            .persistent()
+            .extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND);
+    }
 
     fn require_admin(env: &Env) -> Result<Address, Error> {
         env.storage()

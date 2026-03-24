@@ -20,4 +20,6 @@ pub enum Error {
     VotingNotEnded = 913,
     NoVoteSession = 914,
     InvalidProjectIndex = 915,
+    CannotCancel = 916,
+    NotCreator = 917,
 }

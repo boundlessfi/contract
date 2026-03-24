@@ -1,8 +1,22 @@
-use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, String};
+use soroban_sdk::{contract, contractimpl, token, Address, BytesN, Env, String};
+
+use boundless_types::ttl::{
+    INSTANCE_TTL_EXTEND, INSTANCE_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND, PERSISTENT_TTL_THRESHOLD,
+};
 
 use crate::error::Error;
 use crate::events::{ProjectRegistered, ProjectSuspended, VerificationUpgraded, WarningIssued};
 use crate::storage::{DataKey, Project};
+
+/// Deposit rate in basis points by verification level.
+/// Level 0: 10%, Level 1: 5%, Level 2+: 0%
+fn deposit_rate_bps(verification_level: u32) -> u32 {
+    match verification_level {
+        0 => 1000, // 10%
+        1 => 500,  // 5%
+        _ => 0,    // Level 2+ no deposit required
+    }
+}
 
 #[contract]
 pub struct ProjectRegistry;
@@ -20,6 +34,7 @@ impl ProjectRegistry {
         admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::ProjectCount, &0u64);
+        Self::extend_instance_ttl(&env);
         Ok(())
     }
 
@@ -92,9 +107,12 @@ impl ProjectRegistry {
             total_platform_spend: 0,
         };
 
+        let key = DataKey::Project(count);
         env.storage()
             .persistent()
-            .set(&DataKey::Project(count), &project);
+            .set(&key, &project);
+        Self::extend_persistent_ttl(&env, &key);
+        Self::extend_instance_ttl(&env);
 
         ProjectRegistered { id: count, owner }.publish(&env);
 
@@ -333,14 +351,144 @@ impl ProjectRegistry {
     }
 
     // ========================================
+    // DEPOSIT MANAGEMENT
+    // ========================================
+
+    /// Calculate the deposit required for a given budget based on project verification level.
+    pub fn calculate_deposit(env: Env, project_id: u64, budget: i128) -> Result<i128, Error> {
+        let project: Project = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Project(project_id))
+            .ok_or(Error::ProjectNotFound)?;
+        let rate = deposit_rate_bps(project.verification_level);
+        if rate == 0 {
+            return Ok(0);
+        }
+        Ok(budget * (rate as i128) / 10_000)
+    }
+
+    /// Lock a deposit for a project. Called by the project owner before posting a bounty/campaign.
+    pub fn lock_deposit(
+        env: Env,
+        project_id: u64,
+        amount: i128,
+        asset: Address,
+    ) -> Result<(), Error> {
+        if amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+
+        let key = DataKey::Project(project_id);
+        let mut project: Project = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::ProjectNotFound)?;
+
+        project.owner.require_auth();
+
+        token::Client::new(&env, &asset).transfer(
+            &project.owner,
+            &env.current_contract_address(),
+            &amount,
+        );
+
+        project.deposit_held += amount;
+        env.storage().persistent().set(&key, &project);
+        Self::extend_persistent_ttl(&env, &key);
+        Ok(())
+    }
+
+    /// Release deposit back to project owner. Called by authorized module on successful completion.
+    pub fn release_deposit(
+        env: Env,
+        module: Address,
+        project_id: u64,
+        amount: i128,
+        asset: Address,
+    ) -> Result<(), Error> {
+        Self::require_authorized_module(&env, &module)?;
+        module.require_auth();
+
+        let key = DataKey::Project(project_id);
+        let mut project: Project = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::ProjectNotFound)?;
+
+        if project.deposit_held < amount {
+            return Err(Error::NoDepositHeld);
+        }
+
+        project.deposit_held -= amount;
+        env.storage().persistent().set(&key, &project);
+
+        token::Client::new(&env, &asset).transfer(
+            &env.current_contract_address(),
+            &project.owner,
+            &amount,
+        );
+        Ok(())
+    }
+
+    /// Forfeit deposit to treasury. Called by admin on violations.
+    pub fn forfeit_deposit(
+        env: Env,
+        project_id: u64,
+        amount: i128,
+        asset: Address,
+        treasury: Address,
+    ) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+
+        let key = DataKey::Project(project_id);
+        let mut project: Project = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::ProjectNotFound)?;
+
+        if project.deposit_held < amount {
+            return Err(Error::NoDepositHeld);
+        }
+
+        project.deposit_held -= amount;
+        env.storage().persistent().set(&key, &project);
+
+        token::Client::new(&env, &asset).transfer(
+            &env.current_contract_address(),
+            &treasury,
+            &amount,
+        );
+        Ok(())
+    }
+
+    /// Get the deposit rate in basis points for a verification level.
+    pub fn get_deposit_rate(_env: Env, verification_level: u32) -> u32 {
+        deposit_rate_bps(verification_level)
+    }
+
+    // ========================================
     // QUERIES
     // ========================================
 
     pub fn get_project(env: Env, project_id: u64) -> Result<Project, Error> {
-        env.storage()
+        let key = DataKey::Project(project_id);
+        let project = env
+            .storage()
             .persistent()
-            .get(&DataKey::Project(project_id))
-            .ok_or(Error::ProjectNotFound)
+            .get(&key)
+            .ok_or(Error::ProjectNotFound)?;
+        Self::extend_persistent_ttl(&env, &key);
+        Self::extend_instance_ttl(&env);
+        Ok(project)
     }
 
     pub fn is_suspended(env: Env, project_id: u64) -> Result<bool, Error> {
@@ -364,12 +512,25 @@ impl ProjectRegistry {
             .ok_or(Error::NotInitialized)?;
         admin.require_auth();
         env.deployer().update_current_contract_wasm(new_wasm_hash);
+        Self::extend_instance_ttl(&env);
         Ok(())
     }
 
     // ========================================
     // INTERNAL HELPERS
     // ========================================
+
+    fn extend_instance_ttl(env: &Env) {
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND);
+    }
+
+    fn extend_persistent_ttl(env: &Env, key: &DataKey) {
+        env.storage()
+            .persistent()
+            .extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND);
+    }
 
     fn require_authorized_module(env: &Env, caller: &Address) -> Result<(), Error> {
         if !env

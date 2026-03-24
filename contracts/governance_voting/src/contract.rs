@@ -1,6 +1,9 @@
 use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, String, Vec};
 
 use boundless_types::math::int_sqrt_i128;
+use boundless_types::ttl::{
+    INSTANCE_TTL_EXTEND, INSTANCE_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND, PERSISTENT_TTL_THRESHOLD,
+};
 
 use crate::error::Error;
 use crate::events::{QFDonationRecorded, SessionConcluded, SessionCreated, VoteCast};
@@ -23,6 +26,7 @@ impl GovernanceVoting {
         }
         admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
+        Self::extend_instance_ttl(&env);
         Ok(())
     }
 
@@ -127,9 +131,12 @@ impl GovernanceVoting {
             weight_by_reputation,
         };
 
+        let session_key = DataKey::Session(session_id.clone());
         env.storage()
             .persistent()
-            .set(&DataKey::Session(session_id.clone()), &session);
+            .set(&session_key, &session);
+        Self::extend_persistent_ttl(&env, &session_key);
+        Self::extend_instance_ttl(&env);
 
         SessionCreated {
             session_id: session_id.clone(),
@@ -200,9 +207,12 @@ impl GovernanceVoting {
                 session.threshold_reached = true;
             }
         }
+        let sess_key = DataKey::Session(session_id.clone());
         env.storage()
             .persistent()
-            .set(&DataKey::Session(session_id.clone()), &session);
+            .set(&sess_key, &session);
+        Self::extend_persistent_ttl(&env, &sess_key);
+        Self::extend_instance_ttl(&env);
 
         let record = VoteRecord {
             voter: voter.clone(),
@@ -385,10 +395,15 @@ impl GovernanceVoting {
     // ========================================================================
 
     pub fn get_session(env: Env, session_id: BytesN<32>) -> Result<VotingSession, Error> {
-        env.storage()
+        let key = DataKey::Session(session_id);
+        let session = env
+            .storage()
             .persistent()
-            .get(&DataKey::Session(session_id))
-            .ok_or(Error::SessionNotFound)
+            .get(&key)
+            .ok_or(Error::SessionNotFound)?;
+        Self::extend_persistent_ttl(&env, &key);
+        Self::extend_instance_ttl(&env);
+        Ok(session)
     }
 
     pub fn get_result(env: Env, session_id: BytesN<32>) -> Result<Vec<VoteOption>, Error> {
@@ -441,6 +456,18 @@ impl GovernanceVoting {
     // ========================================================================
     // INTERNAL HELPERS
     // ========================================================================
+
+    fn extend_instance_ttl(env: &Env) {
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND);
+    }
+
+    fn extend_persistent_ttl(env: &Env, key: &DataKey) {
+        env.storage()
+            .persistent()
+            .extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND);
+    }
 
     fn is_module_authorized_internal(env: &Env, module: &Address) -> bool {
         // Admin is always authorized

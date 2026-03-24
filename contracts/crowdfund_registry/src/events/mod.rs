@@ -64,3 +64,27 @@ pub struct RefundBatchProcessed {
     pub batch_index: u32,
     pub count: u32,
 }
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MilestoneDisputed {
+    #[topic]
+    pub campaign_id: u64,
+    pub milestone_id: u32,
+    pub disputer: Address,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CampaignTerminated {
+    #[topic]
+    pub id: u64,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MilestoneOverdue {
+    #[topic]
+    pub campaign_id: u64,
+    pub milestone_id: u32,
+}

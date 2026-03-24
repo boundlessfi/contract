@@ -29,4 +29,6 @@ pub enum Error {
     NotSplitType = 722,
     SlotNotFound = 723,
     CannotCancel = 724,
+    NotFCFSType = 725,
+    AutoReleaseNotReady = 726,
 }

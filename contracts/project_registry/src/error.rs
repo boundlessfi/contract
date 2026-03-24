@@ -12,4 +12,6 @@ pub enum Error {
     BudgetExceedsLimit = 605,
     ModuleNotAuthorized = 606,
     InsufficientDeposit = 607,
+    NoDepositHeld = 608,
+    InvalidAmount = 609,
 }

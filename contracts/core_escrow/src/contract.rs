@@ -4,6 +4,9 @@ use crate::events::{
     Refunded, SlotReleased,
 };
 use crate::storage::{DataKey, EscrowPool, FeeConfig, FeeRecord, InsuranceFund, ReleaseSlot};
+use boundless_types::ttl::{
+    INSTANCE_TTL_EXTEND, INSTANCE_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND, PERSISTENT_TTL_THRESHOLD,
+};
 use boundless_types::{math, ModuleType, SubType};
 use soroban_sdk::{contract, contractimpl, token, Address, Bytes, BytesN, Env, Vec};
 
@@ -34,6 +37,7 @@ impl CoreEscrow {
             .instance()
             .set(&DataKey::RoutingPaused, &false);
         env.storage().instance().set(&DataKey::Version, &1u32);
+        Self::extend_instance_ttl(&env);
         Ok(())
     }
 
@@ -56,10 +60,15 @@ impl CoreEscrow {
     }
 
     pub fn get_pool(env: Env, pool_id: BytesN<32>) -> Result<EscrowPool, Error> {
-        env.storage()
+        let key = DataKey::EscrowPool(pool_id);
+        let pool: EscrowPool = env
+            .storage()
             .persistent()
-            .get(&DataKey::EscrowPool(pool_id))
-            .ok_or(Error::PoolNotFound)
+            .get(&key)
+            .ok_or(Error::PoolNotFound)?;
+        Self::extend_persistent_ttl(&env, &key);
+        Self::extend_instance_ttl(&env);
+        Ok(pool)
     }
 
     pub fn get_slot(env: Env, pool_id: BytesN<32>, index: u32) -> Result<ReleaseSlot, Error> {
@@ -295,9 +304,10 @@ impl CoreEscrow {
             created_at: env.ledger().timestamp(),
             expires_at,
         };
-        env.storage()
-            .persistent()
-            .set(&DataKey::EscrowPool(pool_id.clone()), &pool);
+        let key = DataKey::EscrowPool(pool_id.clone());
+        env.storage().persistent().set(&key, &pool);
+        Self::extend_persistent_ttl(&env, &key);
+        Self::extend_instance_ttl(&env);
         PoolCreated {
             pool_id: pool_id.clone(),
             owner,
@@ -758,6 +768,23 @@ impl CoreEscrow {
         Ok(pledge_amount)
     }
 
+    /// Convenience wrapper: release escrow to recipient with no fee.
+    /// Calls release_partial internally.
+    pub fn route_payout(
+        env: Env,
+        pool_id: BytesN<32>,
+        recipient: Address,
+        amount: i128,
+    ) -> Result<(), Error> {
+        Self::release_partial(env, pool_id, recipient, amount)
+    }
+
+    /// Convenience wrapper: refund escrowed net amount to pool owner.
+    /// Calls refund_all internally.
+    pub fn route_refund(env: Env, pool_id: BytesN<32>) -> Result<(), Error> {
+        Self::refund_all(env, pool_id)
+    }
+
     // ========================================================================
     // INTERNAL HELPERS
     // ========================================================================
@@ -798,6 +825,18 @@ impl CoreEscrow {
             .ok_or(Error::Overflow)?;
         env.storage().instance().set(&DataKey::InsuranceFund, &fund);
         Ok(())
+    }
+
+    fn extend_instance_ttl(env: &Env) {
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND);
+    }
+
+    fn extend_persistent_ttl(env: &Env, key: &DataKey) {
+        env.storage()
+            .persistent()
+            .extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND);
     }
 
     fn compute_pool_id(env: &Env, module: &ModuleType, module_id: u64) -> BytesN<32> {

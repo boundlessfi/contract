@@ -25,4 +25,6 @@ pub enum Error {
     DeadlineNotPassed = 818,
     AmountNotPositive = 819,
     Overflow = 820,
+    MilestoneNotOverdue = 821,
+    NotBacker = 822,
 }

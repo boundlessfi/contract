@@ -1,5 +1,6 @@
 [package]
 name = "core_escrow"
+authors = ["Collins <collins@boundlessfi.xyz>"]
 version = "0.1.0"
 edition = "2021"
 publish = false

@@ -19,6 +19,7 @@ pub enum MilestoneStatus {
     Approved,
     Released,
     Rejected,
+    Disputed,
 }
 
 #[contracttype]

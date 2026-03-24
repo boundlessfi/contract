@@ -11,6 +11,7 @@ pub enum GrantType {
 #[contracttype]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GrantStatus {
+    Pending,
     Active,
     Executing,
     Completed,

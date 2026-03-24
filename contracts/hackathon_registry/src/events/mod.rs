@@ -49,3 +49,20 @@ pub struct HackathonCancelled {
     #[topic]
     pub hackathon_id: u64,
 }
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SponsoredTrackAdded {
+    #[topic]
+    pub hackathon_id: u64,
+    pub track_id: u32,
+    pub sponsor: Address,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TrackPrizesDistributed {
+    #[topic]
+    pub hackathon_id: u64,
+    pub track_id: u32,
+}
