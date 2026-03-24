@@ -1,165 +1,275 @@
-use super::*;
-use crate::storage::{Campaign, CampaignStatus, DataKey, Milestone, MilestoneStatus};
-use core_escrow::{CoreEscrow, CoreEscrowClient};
-use payment_router::{PaymentRouter, PaymentRouterClient};
-use reputation_registry::{ReputationRegistry, ReputationRegistryClient};
-use soroban_sdk::{testutils::Address as _, Address, Env, String, Vec};
+#![cfg(test)]
 
-#[test]
-fn test_crowdfund_full_lifecycle() {
+use crate::contract::{CrowdfundRegistry, CrowdfundRegistryClient};
+use crate::storage::CampaignStatus;
+use core_escrow::{CoreEscrow, CoreEscrowClient};
+use reputation_registry::{ReputationRegistry, ReputationRegistryClient};
+use soroban_sdk::testutils::{Address as _, Ledger};
+use soroban_sdk::token::{StellarAssetClient, TokenClient};
+use soroban_sdk::{Address, Env, String, Vec};
+
+struct TestEnv<'a> {
+    env: Env,
+    client: CrowdfundRegistryClient<'a>,
+    escrow_client: CoreEscrowClient<'a>,
+    rep_client: ReputationRegistryClient<'a>,
+    admin: Address,
+    token: TokenClient<'a>,
+    token_addr: Address,
+}
+
+fn setup() -> TestEnv<'static> {
     let env = Env::default();
     env.mock_all_auths();
 
-    // 1. Setup ecosystem
-    let admins = Address::generate(&env);
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
 
-    let esc_id = env.register(CoreEscrow, ());
-    let esc_client = CoreEscrowClient::new(&env, &esc_id);
-    esc_client.init_core_escrow(&admins);
+    // Deploy token
+    let token_admin = Address::generate(&env);
+    let token_addr = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+    let token = TokenClient::new(&env, &token_addr);
+    let sac = StellarAssetClient::new(&env, &token_addr);
 
+    // Deploy CoreEscrow
+    let escrow_id = env.register(CoreEscrow, ());
+    let escrow_client = CoreEscrowClient::new(&env, &escrow_id);
+    escrow_client.init(&admin, &treasury);
+
+    // Deploy ReputationRegistry
     let rep_id = env.register(ReputationRegistry, ());
     let rep_client = ReputationRegistryClient::new(&env, &rep_id);
-    rep_client.init_reputation_reg(&admins);
+    rep_client.init(&admin);
 
-    let router_id = env.register(PaymentRouter, ());
-    let router_client = PaymentRouterClient::new(&env, &router_id);
-    router_client.init_payment_router(&admins, &admins, &esc_id);
+    // Deploy CrowdfundRegistry
+    let cf_id = env.register(CrowdfundRegistry, ());
+    let client = CrowdfundRegistryClient::new(&env, &cf_id);
+    client.init(&admin, &escrow_id, &rep_id);
 
-    let reg_id = env.register(CrowdfundRegistry, ());
-    let client = CrowdfundRegistryClient::new(&env, &reg_id);
+    // Authorize CrowdfundRegistry in CoreEscrow and ReputationRegistry
+    escrow_client.authorize_module(&cf_id);
+    rep_client.add_authorized_module(&cf_id);
 
-    // Dummy addresses for mocks
-    let proj_reg = Address::generate(&env);
-    let voting = Address::generate(&env);
+    // Mint tokens to donors
+    sac.mint(&admin, &100_000);
 
-    client.init_crowdfund_reg(&admins, &proj_reg, &esc_id, &voting, &rep_id, &router_id);
+    TestEnv {
+        env,
+        client,
+        escrow_client,
+        rep_client,
+        admin,
+        token,
+        token_addr,
+    }
+}
 
-    // Assets setup
-    let owner = Address::generate(&env);
-    let donor1 = Address::generate(&env);
-    let donor2 = Address::generate(&env);
-
-    let token_admin = Address::generate(&env);
-    let asset = env
-        .register_stellar_asset_contract_v2(token_admin)
-        .address();
-    let token_admin_client = soroban_sdk::token::StellarAssetClient::new(&env, &asset);
-
-    token_admin_client.mint(&donor1, &10000);
-    token_admin_client.mint(&donor2, &10000);
-
-    // 2. Create Campaign
-    let mut milestones = Vec::new(&env);
-    milestones.push_back(Milestone {
-        id: 1,
-        description: String::from_str(&env, "MVP"),
-        amount: 5000,
-        status: MilestoneStatus::Pending,
-    });
-    milestones.push_back(Milestone {
-        id: 2,
-        description: String::from_str(&env, "Beta"),
-        amount: 5000,
-        status: MilestoneStatus::Pending,
-    });
-
-    let cid = client.create_campaign(
-        &owner,
-        &1u64,
-        &String::from_str(&env, "ipfs://meta"),
-        &10000i128,
-        &asset,
-        &1000u64, // deadline
-        &milestones,
-        &1000i128, // min pledge
-    );
-    assert_eq!(cid, 1);
-
-    // 3. Pledging
-    // With 5% fee, we need gross 10527 to reach 10000 net
-    client.pledge(&donor1, &cid, &7000);
-    client.pledge(&donor2, &cid, &5000);
-
-    let campaign = client.get_campaign(&cid);
-    assert!(campaign.current_funding >= 10000);
-    assert_eq!(campaign.status, CampaignStatus::Funded);
-
-    // 4. Milestones
-    client.submit_milestone(&cid, &1);
-    let campaign_after_submit = client.get_campaign(&cid);
-    assert_eq!(campaign_after_submit.status, CampaignStatus::Executing);
-
-    client.approve_milestone(&cid, &1);
-
-    let token_client = soroban_sdk::token::Client::new(&env, &asset);
-    assert!(token_client.balance(&owner) >= 5000);
-
-    // Release second milestone
-    client.submit_milestone(&cid, &2);
-    client.approve_milestone(&cid, &2);
-
-    let final_campaign = client.get_campaign(&cid);
-    assert_eq!(final_campaign.status, CampaignStatus::Completed);
-    assert!(token_client.balance(&owner) >= 10000);
+fn make_milestones(env: &Env) -> Vec<(String, u32)> {
+    let mut ms = Vec::new(env);
+    ms.push_back((String::from_str(env, "MVP"), 5000u32));
+    ms.push_back((String::from_str(env, "Beta"), 5000u32));
+    ms
 }
 
 #[test]
-fn test_refund_fails_if_funded() {
-    let env = Env::default();
-    env.mock_all_auths();
+fn test_create_campaign() {
+    let t = setup();
+    let owner = t.admin.clone();
 
-    let admins = Address::generate(&env);
-    let esc_id = env.register(CoreEscrow, ());
-    let rep_id = env.register(ReputationRegistry, ());
-    let router_id = env.register(PaymentRouter, ());
-    let reg_id = env.register(CrowdfundRegistry, ());
-    let client = CrowdfundRegistryClient::new(&env, &reg_id);
-
-    client.init_crowdfund_reg(
-        &admins,
-        &Address::generate(&env),
-        &esc_id,
-        &Address::generate(&env),
-        &rep_id,
-        &router_id,
-    );
-
-    let owner = Address::generate(&env);
-    let asset = Address::generate(&env);
-    let cid = client.create_campaign(
+    let cid = t.client.create_campaign(
         &owner,
-        &1,
-        &String::from_str(&env, ""),
-        &1000,
-        &asset,
-        &1000,
-        &Vec::new(&env),
-        &10,
+        &String::from_str(&t.env, "My Campaign"),
+        &10000i128,
+        &t.token_addr,
+        &(t.env.ledger().timestamp() + 86400),
+        &make_milestones(&t.env),
+        &100i128,
     );
 
-    // Mock successful funding by directly setting storage of the registered contract
-    env.as_contract(&reg_id, || {
-        let mut campaign: Campaign = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Campaign(cid))
-            .unwrap();
-        campaign.status = CampaignStatus::Funded;
-        env.storage()
-            .persistent()
-            .set(&DataKey::Campaign(cid), &campaign);
+    assert_eq!(cid, 1);
+    let campaign = t.client.get_campaign(&1);
+    assert_eq!(campaign.status, CampaignStatus::Campaigning);
+    assert_eq!(campaign.funding_goal, 10000);
+    assert_eq!(campaign.milestone_count, 2);
+}
+
+#[test]
+fn test_full_lifecycle() {
+    let t = setup();
+    let sac = StellarAssetClient::new(&t.env, &t.token_addr);
+
+    let owner = Address::generate(&t.env);
+    let donor1 = Address::generate(&t.env);
+    let donor2 = Address::generate(&t.env);
+
+    sac.mint(&donor1, &10_000);
+    sac.mint(&donor2, &10_000);
+
+    let cid = t.client.create_campaign(
+        &owner,
+        &String::from_str(&t.env, "Build a DAO"),
+        &1000i128,
+        &t.token_addr,
+        &(t.env.ledger().timestamp() + 86400),
+        &make_milestones(&t.env),
+        &100i128,
+    );
+
+    // Pledge enough to fund (fee-on-top: backers pay more than the pledge)
+    t.client.pledge(&donor1, &cid, &600);
+    let campaign = t.client.get_campaign(&cid);
+    assert_eq!(campaign.status, CampaignStatus::Campaigning);
+
+    t.client.pledge(&donor2, &cid, &500);
+    let campaign = t.client.get_campaign(&cid);
+    assert_eq!(campaign.status, CampaignStatus::Funded);
+
+    // Submit and approve milestone 0
+    t.client.submit_milestone(&cid, &0);
+    let campaign = t.client.get_campaign(&cid);
+    assert_eq!(campaign.status, CampaignStatus::Executing);
+
+    t.client.approve_milestone(&cid, &0);
+    assert!(t.token.balance(&owner) > 0);
+
+    // Submit and approve milestone 1 → Completed
+    t.client.submit_milestone(&cid, &1);
+    t.client.approve_milestone(&cid, &1);
+
+    let campaign = t.client.get_campaign(&cid);
+    assert_eq!(campaign.status, CampaignStatus::Completed);
+}
+
+#[test]
+fn test_failed_campaign_refund() {
+    let t = setup();
+    let sac = StellarAssetClient::new(&t.env, &t.token_addr);
+
+    let owner = Address::generate(&t.env);
+    let donor = Address::generate(&t.env);
+    sac.mint(&donor, &10_000);
+
+    let deadline = t.env.ledger().timestamp() + 1000;
+
+    let cid = t.client.create_campaign(
+        &owner,
+        &String::from_str(&t.env, "Underfunded"),
+        &5000i128,
+        &t.token_addr,
+        &deadline,
+        &make_milestones(&t.env),
+        &100i128,
+    );
+
+    // Pledge but not enough to fund
+    t.client.pledge(&donor, &cid, &500);
+
+    let balance_after_pledge = t.token.balance(&donor);
+
+    // Advance past deadline
+    t.env.ledger().with_mut(|l| {
+        l.timestamp = deadline + 1;
     });
 
-    let donor = Address::generate(&env);
+    // Mark as failed
+    t.client.check_deadline(&cid);
+    let campaign = t.client.get_campaign(&cid);
+    assert_eq!(campaign.status, CampaignStatus::Failed);
 
-    // When calling via client, errors are returned as Err(Error).
-    // The specific error is likely wrapped.
-    // For simplicity in this test environment, we expect it to return Err.
-    // We can try to match the error if we import it.
-    let res = client.try_request_refund(&donor, &cid);
-    assert!(res.is_err());
-    assert_eq!(
-        res.err(),
-        Some(Ok(crate::error::Error::CampaignAlreadyFunded))
+    // Process refund batch
+    t.client.process_refund_batch(&cid);
+
+    // Donor got their pledge back
+    assert_eq!(t.token.balance(&donor), balance_after_pledge + 500);
+}
+
+#[test]
+fn test_cancel_campaign() {
+    let t = setup();
+    let sac = StellarAssetClient::new(&t.env, &t.token_addr);
+
+    let owner = Address::generate(&t.env);
+    let donor = Address::generate(&t.env);
+    sac.mint(&donor, &5_000);
+
+    let cid = t.client.create_campaign(
+        &owner,
+        &String::from_str(&t.env, "Cancel me"),
+        &10000i128,
+        &t.token_addr,
+        &(t.env.ledger().timestamp() + 86400),
+        &make_milestones(&t.env),
+        &100i128,
     );
+
+    t.client.pledge(&donor, &cid, &200);
+
+    // Admin cancels
+    t.client.cancel_campaign(&cid);
+    let campaign = t.client.get_campaign(&cid);
+    assert_eq!(campaign.status, CampaignStatus::Cancelled);
+
+    // Process refund
+    let balance_before = t.token.balance(&donor);
+    t.client.process_refund_batch(&cid);
+    assert_eq!(t.token.balance(&donor), balance_before + 200);
+}
+
+#[test]
+fn test_reject_milestone() {
+    let t = setup();
+    let sac = StellarAssetClient::new(&t.env, &t.token_addr);
+
+    let owner = Address::generate(&t.env);
+    let donor = Address::generate(&t.env);
+    sac.mint(&donor, &10_000);
+
+    let cid = t.client.create_campaign(
+        &owner,
+        &String::from_str(&t.env, "With rejection"),
+        &1000i128,
+        &t.token_addr,
+        &(t.env.ledger().timestamp() + 86400),
+        &make_milestones(&t.env),
+        &100i128,
+    );
+
+    t.client.pledge(&donor, &cid, &1100);
+
+    // Submit milestone 0
+    t.client.submit_milestone(&cid, &0);
+
+    // Reject it
+    t.client.reject_milestone(&cid, &0);
+    let ms = t.client.get_milestone(&cid, &0);
+    assert_eq!(ms.status, crate::storage::MilestoneStatus::Rejected);
+
+    // Can resubmit after rejection
+    t.client.submit_milestone(&cid, &0);
+    let ms = t.client.get_milestone(&cid, &0);
+    assert_eq!(ms.status, crate::storage::MilestoneStatus::Submitted);
+}
+
+#[test]
+fn test_invalid_milestones_rejected() {
+    let t = setup();
+    let owner = t.admin.clone();
+
+    // Milestones that don't sum to 10000
+    let mut bad_ms = Vec::new(&t.env);
+    bad_ms.push_back((String::from_str(&t.env, "A"), 3000u32));
+    bad_ms.push_back((String::from_str(&t.env, "B"), 3000u32));
+
+    let result = t.client.try_create_campaign(
+        &owner,
+        &String::from_str(&t.env, "Bad"),
+        &1000i128,
+        &t.token_addr,
+        &(t.env.ledger().timestamp() + 86400),
+        &bad_ms,
+        &100i128,
+    );
+    assert!(result.is_err());
 }

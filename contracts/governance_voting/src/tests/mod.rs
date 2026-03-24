@@ -2,8 +2,7 @@ use super::*;
 use crate::storage::VoteContext;
 use soroban_sdk::{testutils::Address as _, testutils::Ledger as _, Address, Env, String, Vec};
 
-#[test]
-fn test_voting_flow() {
+fn setup_env() -> (Env, GovernanceVotingClient<'static>, Address, Address) {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -11,8 +10,17 @@ fn test_voting_flow() {
     let client = GovernanceVotingClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    let rep_reg = Address::generate(&env);
-    client.init_gov_voting(&admin, &rep_reg);
+    client.init(&admin);
+
+    let module = Address::generate(&env);
+    client.add_authorized_module(&module);
+
+    (env, client, admin, module)
+}
+
+#[test]
+fn test_voting_flow() {
+    let (env, client, _admin, module) = setup_env();
 
     let start = env.ledger().timestamp();
     let end = start + 1000;
@@ -22,13 +30,14 @@ fn test_voting_flow() {
     options.push_back(String::from_str(&env, "No"));
 
     let sid = client.create_session(
-        &admin,
+        &module,
         &VoteContext::CampaignValidation,
         &99,
         &options,
         &start,
         &end,
         &Some(2),
+        &None,
         &false,
     );
 
@@ -40,72 +49,124 @@ fn test_voting_flow() {
 
     let opt = client.get_option(&sid, &0);
     assert_eq!(opt.votes, 1);
-    assert!(!session.threshold_reached); // 1 < 2
+    assert!(!session.threshold_reached);
 
     let voter2 = Address::generate(&env);
     client.cast_vote(&voter2, &sid, &0);
 
     let session2 = client.get_session(&sid);
-    assert!(session2.threshold_reached); // 2 >= 2
+    assert!(session2.threshold_reached);
+}
+
+#[test]
+fn test_conclude_session() {
+    let (env, client, _admin, module) = setup_env();
+
+    let start = env.ledger().timestamp();
+    let end = start + 1000;
+
+    let mut options = Vec::new(&env);
+    options.push_back(String::from_str(&env, "Yes"));
+
+    let sid = client.create_session(
+        &module,
+        &VoteContext::CampaignValidation,
+        &50,
+        &options,
+        &start,
+        &end,
+        &None,
+        &None,
+        &false,
+    );
+
+    // Cannot conclude before end
+    let result = client.try_conclude_session(&sid);
+    assert!(result.is_err());
+
+    env.ledger().with_mut(|l| {
+        l.timestamp = end + 1;
+    });
+
+    client.conclude_session(&sid);
+    let session = client.get_session(&sid);
+    assert_eq!(session.status, crate::storage::VoteStatus::Concluded);
+}
+
+#[test]
+fn test_double_vote_rejected() {
+    let (env, client, _admin, module) = setup_env();
+
+    let start = env.ledger().timestamp();
+    let end = start + 1000;
+
+    let mut options = Vec::new(&env);
+    options.push_back(String::from_str(&env, "Yes"));
+    options.push_back(String::from_str(&env, "No"));
+
+    let sid = client.create_session(
+        &module,
+        &VoteContext::CampaignValidation,
+        &77,
+        &options,
+        &start,
+        &end,
+        &None,
+        &None,
+        &false,
+    );
+
+    let voter = Address::generate(&env);
+    client.cast_vote(&voter, &sid, &0);
+
+    let result = client.try_cast_vote(&voter, &sid, &1);
+    assert!(result.is_err());
 }
 
 #[test]
 fn test_qf_logic() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register(GovernanceVoting, ());
-    let client = GovernanceVotingClient::new(&env, &contract_id);
+    let (env, client, _admin, module) = setup_env();
 
-    let admin = Address::generate(&env);
-    let rep_reg = Address::generate(&env);
-    client.init_gov_voting(&admin, &rep_reg);
-
-    // Create session with 3 options (0, 1, 2)
     let start = env.ledger().timestamp();
     let end = start + 1000;
     let mut options = Vec::new(&env);
-    options.push_back(String::from_str(&env, "P0")); // index 0
-    options.push_back(String::from_str(&env, "P1")); // index 1
-    options.push_back(String::from_str(&env, "P2")); // index 2
+    options.push_back(String::from_str(&env, "P0"));
+    options.push_back(String::from_str(&env, "P1"));
+    options.push_back(String::from_str(&env, "P2"));
 
     let sid = client.create_session(
-        &admin,
+        &module,
         &VoteContext::QFRound,
         &123,
         &options,
         &start,
         &end,
         &None,
+        &None,
         &false,
     );
 
-    // Donor A -> Project 1: 100 (sqrt=10)
-    // Donor B -> Project 1: 100 (sqrt=10) -> Sum Sqrt = 20 -> Sq = 400
-    // Donor C -> Project 2: 400 (sqrt=20) -> Sum Sqrt = 20 -> Sq = 400
+    // Donor A -> Project 1: 100 (sqrt(100*1e6) = 10000)
+    // Donor B -> Project 1: 100 (sqrt(100*1e6) = 10000) -> Sum Sqrt = 20000 -> Sq = 400_000_000
+    // Donor C -> Project 2: 400 (sqrt(400*1e6) = 20000) -> Sum Sqrt = 20000 -> Sq = 400_000_000
+    //
+    // Total Sq = 800_000_000
+    // Project 1 Share = (400_000_000 / 800_000_000) * 1000 = 500
+    // Project 2 Share = (400_000_000 / 800_000_000) * 1000 = 500
 
-    // Total Sq = 800.
-    // Matching Pool = 1000.
-    // Project 1 Share = (400/800) * 1000 = 500
-    // Project 2 Share = (400/800) * 1000 = 500
-
-    let d1 = Address::generate(&env);
-    let d2 = Address::generate(&env);
-    let d3 = Address::generate(&env);
-
-    let module = Address::generate(&env);
-    client.add_gov_module(&module);
-
-    client.record_qf_donation(&module, &sid, &d1, &1, &100);
-    client.record_qf_donation(&module, &sid, &d2, &1, &100);
-    client.record_qf_donation(&module, &sid, &d3, &2, &400);
+    client.record_qf_donation(&sid, &module, &100, &1);
+    client.record_qf_donation(&sid, &module, &100, &1);
+    client.record_qf_donation(&sid, &module, &400, &2);
 
     // Jump time to end round
-    env.ledger().set_timestamp(end + 1);
+    env.ledger().with_mut(|l| {
+        l.timestamp = end + 1;
+    });
 
     let distribution = client.compute_qf_distribution(&sid, &1000);
 
-    let mut p1_share = 0;
-    let mut p2_share = 0;
+    let mut p1_share = 0i128;
+    let mut p2_share = 0i128;
 
     for pair in distribution.iter() {
         let (pid, share) = pair;
@@ -119,4 +180,31 @@ fn test_qf_logic() {
 
     assert_eq!(p1_share, 500);
     assert_eq!(p2_share, 500);
+}
+
+#[test]
+fn test_cancel_session() {
+    let (env, client, admin, module) = setup_env();
+
+    let start = env.ledger().timestamp();
+    let end = start + 1000;
+
+    let mut options = Vec::new(&env);
+    options.push_back(String::from_str(&env, "A"));
+
+    let sid = client.create_session(
+        &module,
+        &VoteContext::RetrospectiveGrant,
+        &42,
+        &options,
+        &start,
+        &end,
+        &None,
+        &None,
+        &false,
+    );
+
+    client.cancel_session(&sid);
+    let session = client.get_session(&sid);
+    assert_eq!(session.status, crate::storage::VoteStatus::Cancelled);
 }

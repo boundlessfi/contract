@@ -1,5 +1,5 @@
 [package]
-name = "grant-hub"
+name = "grant_hub"
 version = "0.0.0"
 edition = "2021"
 publish = false
@@ -10,8 +10,8 @@ doctest = false
 
 [dependencies]
 soroban-sdk = { workspace = true }
+boundless-types = { workspace = true }
 core_escrow = { path = "../core_escrow" }
-payment_router = { path = "../payment_router" }
 reputation_registry = { path = "../reputation_registry" }
 governance_voting = { path = "../governance_voting" }
 

@@ -1,7 +1,7 @@
-use crate::storage::ModuleType;
+use boundless_types::{ModuleType, SubType};
 use soroban_sdk::{contractevent, Address, BytesN};
 
-#[contractevent(topics = ["PoolCreated"], data_format = "vec")]
+#[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PoolCreated {
     #[topic]
@@ -11,14 +11,14 @@ pub struct PoolCreated {
     pub total_amount: i128,
 }
 
-#[contractevent(topics = ["PoolLocked"])]
+#[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PoolLocked {
     #[topic]
     pub pool_id: BytesN<32>,
 }
 
-#[contractevent(topics = ["SlotReleased"], data_format = "vec")]
+#[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SlotReleased {
     #[topic]
@@ -28,7 +28,7 @@ pub struct SlotReleased {
     pub amount: i128,
 }
 
-#[contractevent(topics = ["Refunded"], data_format = "vec")]
+#[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Refunded {
     #[topic]
@@ -37,19 +37,35 @@ pub struct Refunded {
     pub amount: i128,
 }
 
-#[contractevent(topics = ["InsuranceContributed"], data_format = "single-value")]
+#[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InsuranceContributed {
-    #[topic]
-    pub asset: Address,
     pub amount: i128,
 }
 
-#[contractevent(topics = ["InsuranceClaimed"], data_format = "vec")]
+#[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InsuranceClaimed {
-    #[topic]
-    pub asset: Address,
     pub claimant: Address,
     pub amount: i128,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FeeCharged {
+    #[topic]
+    pub pool_id: BytesN<32>,
+    pub sub_type: SubType,
+    pub gross: i128,
+    pub fee: i128,
+    pub treasury_cut: i128,
+    pub insurance_cut: i128,
+    pub net: i128,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FeeRateUpdated {
+    pub old_bps: u32,
+    pub new_bps: u32,
 }

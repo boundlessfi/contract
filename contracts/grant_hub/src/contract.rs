@@ -1,130 +1,162 @@
-use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, IntoVal, String, Symbol, Vec};
+use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, String, Vec};
 
-use core_escrow::ModuleType;
+use boundless_types::ModuleType;
+use core_escrow::CoreEscrowClient;
 use governance_voting::storage::VoteContext;
-use reputation_registry::ActivityCategory;
+use governance_voting::GovernanceVotingClient;
+use reputation_registry::ReputationRegistryClient;
 
 use crate::error::Error;
-use crate::events::GrantCreated;
-use crate::storage::{DataKey, Grant, GrantMilestone, GrantStatus, GrantType, MilestoneStatus};
+use crate::events::{GrantCompleted, GrantCreated, MilestoneApproved, MilestoneSubmitted, QFDonationMade};
+use crate::storage::{
+    DataKey, Grant, GrantMilestone, GrantStatus, GrantType, MilestoneStatus, QFRoundData,
+};
 
 #[contract]
 pub struct GrantHub;
 
 #[contractimpl]
 impl GrantHub {
-    pub fn init_grant_hub(
+    // ========================================================================
+    // INITIALIZATION
+    // ========================================================================
+
+    pub fn init(
         env: Env,
         admin: Address,
-        project_registry: Address,
         core_escrow: Address,
-        governance_voting: Address,
         reputation_registry: Address,
-        payment_router: Address,
+        governance_voting: Address,
     ) -> Result<(), Error> {
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(Error::AlreadyInitialized);
         }
+        admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage()
-            .instance()
-            .set(&DataKey::ProjectRegistry, &project_registry);
         env.storage()
             .instance()
             .set(&DataKey::CoreEscrow, &core_escrow);
         env.storage()
             .instance()
-            .set(&DataKey::GovernanceVoting, &governance_voting);
-        env.storage()
-            .instance()
             .set(&DataKey::ReputationRegistry, &reputation_registry);
         env.storage()
             .instance()
-            .set(&DataKey::PaymentRouter, &payment_router);
+            .set(&DataKey::GovernanceVoting, &governance_voting);
         env.storage().instance().set(&DataKey::GrantCount, &0u64);
         Ok(())
     }
 
+    // ========================================================================
+    // QUERIES
+    // ========================================================================
+
+    pub fn get_grant(env: Env, grant_id: u64) -> Result<Grant, Error> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Grant(grant_id))
+            .ok_or(Error::GrantNotFound)
+    }
+
+    pub fn get_milestone(
+        env: Env,
+        grant_id: u64,
+        milestone_index: u32,
+    ) -> Result<GrantMilestone, Error> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::GrantMilestone(grant_id, milestone_index))
+            .ok_or(Error::MilestoneNotFound)
+    }
+
+    pub fn get_qf_round(env: Env, grant_id: u64) -> Result<QFRoundData, Error> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::QFRound(grant_id))
+            .ok_or(Error::GrantNotFound)
+    }
+
+    pub fn get_retro_session(env: Env, grant_id: u64) -> Result<BytesN<32>, Error> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::RetroSession(grant_id))
+            .ok_or(Error::NoVoteSession)
+    }
+
+    // ========================================================================
+    // MILESTONE GRANT FLOW
+    // ========================================================================
+
     pub fn create_milestone_grant(
         env: Env,
         creator: Address,
-        project_id: u64,
         recipient: Address,
-        metadata_cid: String,
-        total_budget: i128,
+        amount: i128,
         asset: Address,
-        milestone_inputs: Vec<(String, i128)>, // (description, amount)
+        milestone_descs: Vec<(String, u32)>, // (description, pct in basis points)
     ) -> Result<u64, Error> {
         creator.require_auth();
 
-        let mut count: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::GrantCount)
-            .unwrap_or(0);
-        count += 1;
-        env.storage().instance().set(&DataKey::GrantCount, &count);
-
-        let esc_addr: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::CoreEscrow)
-            .ok_or(Error::NotInitialized)?;
-
-        let pool_id: BytesN<32> = env.invoke_contract(
-            &esc_addr,
-            &Symbol::new(&env, "create_pool"),
-            (
-                creator.clone(),
-                ModuleType::Grant,
-                count,
-                total_budget,
-                asset.clone(),
-                env.ledger().timestamp() + 31536000,
-                env.current_contract_address(),
-            )
-                .into_val(&env),
-        );
-
-        let mut milestones = Vec::new(&env);
-        let mut slots = Vec::new(&env);
-        for (i, (desc, amt)) in milestone_inputs.iter().enumerate() {
-            milestones.push_back(GrantMilestone {
-                index: i as u32,
-                description_cid: desc,
-                amount: amt,
-                status: MilestoneStatus::Pending,
-                submission_cid: None,
-            });
-            slots.push_back((recipient.clone(), amt));
+        if amount <= 0 {
+            return Err(Error::InvalidAmount);
         }
 
-        env.invoke_contract::<()>(
-            &esc_addr,
-            &Symbol::new(&env, "define_release_slots"),
-            (pool_id.clone(), slots).into_val(&env),
+        // Validate milestones sum to 10000
+        let mut total_pct: u32 = 0;
+        for (_, pct) in milestone_descs.iter() {
+            total_pct += pct;
+        }
+        if total_pct != 10000 {
+            return Err(Error::InvalidMilestonePercents);
+        }
+
+        let count = Self::next_grant_id(&env);
+        let escrow = Self::escrow_client(&env);
+
+        let pool_id = escrow.create_pool(
+            &creator,
+            &ModuleType::Grant,
+            &count,
+            &amount,
+            &asset,
+            &(env.ledger().timestamp() + 31_536_000), // 1 year
+            &env.current_contract_address(),
         );
 
-        env.invoke_contract::<()>(
-            &esc_addr,
-            &Symbol::new(&env, "lock_pool"),
-            (pool_id.clone(),).into_val(&env),
-        );
+        // Define release slots based on milestone percentages
+        let mut slots: Vec<(Address, i128)> = Vec::new(&env);
+        let milestone_count = milestone_descs.len();
+        for (_, pct) in milestone_descs.iter() {
+            let slot_amount = (amount * pct as i128) / 10000;
+            slots.push_back((recipient.clone(), slot_amount));
+        }
+
+        escrow.define_release_slots(&pool_id, &slots);
+        escrow.lock_pool(&pool_id);
+
+        // Store milestones decomposed
+        for (i, (desc, pct)) in milestone_descs.iter().enumerate() {
+            let milestone = GrantMilestone {
+                id: i as u32,
+                description: desc,
+                pct,
+                status: MilestoneStatus::Pending,
+            };
+            env.storage()
+                .persistent()
+                .set(&DataKey::GrantMilestone(count, i as u32), &milestone);
+        }
 
         let grant = Grant {
             id: count,
-            grant_type: GrantType::Milestone,
             creator: creator.clone(),
-            project_id,
-            metadata_cid: metadata_cid.clone(),
+            grant_type: GrantType::Milestone,
             status: GrantStatus::Active,
-            total_budget,
+            amount,
             asset,
             pool_id,
-            recipient: Some(recipient),
-            milestones,
-            vote_session_id: None,
-            applicants: Vec::new(&env),
+            milestone_count,
+            metadata_cid: String::from_str(&env, ""),
+            created_at: env.ledger().timestamp(),
         };
 
         env.storage()
@@ -135,7 +167,7 @@ impl GrantHub {
             id: count,
             grant_type: GrantType::Milestone,
             creator,
-            budget: total_budget,
+            amount,
         }
         .publish(&env);
 
@@ -147,11 +179,10 @@ impl GrantHub {
         recipient: Address,
         grant_id: u64,
         milestone_index: u32,
-        submission_cid: String,
     ) -> Result<(), Error> {
         recipient.require_auth();
 
-        let mut grant: Grant = env
+        let grant: Grant = env
             .storage()
             .persistent()
             .get(&DataKey::Grant(grant_id))
@@ -160,33 +191,29 @@ impl GrantHub {
         if grant.grant_type != GrantType::Milestone {
             return Err(Error::NotMilestoneGrant);
         }
-        if grant.recipient.as_ref().ok_or(Error::NotRecipient)? != &recipient {
-            return Err(Error::NotRecipient);
-        }
 
-        let mut found = false;
-        let mut updated_milestones = Vec::new(&env);
-        for m in grant.milestones.iter() {
-            let mut m = m;
-            if m.index == milestone_index {
-                if m.status != MilestoneStatus::Pending && m.status != MilestoneStatus::Rejected {
-                    return Err(Error::InvalidMilestoneStatus);
-                }
-                m.status = MilestoneStatus::Submitted;
-                m.submission_cid = Some(submission_cid.clone());
-                found = true;
-            }
-            updated_milestones.push_back(m);
-        }
-
-        if !found {
-            return Err(Error::MilestoneNotFound);
-        }
-
-        grant.milestones = updated_milestones;
-        env.storage()
+        let key = DataKey::GrantMilestone(grant_id, milestone_index);
+        let mut milestone: GrantMilestone = env
+            .storage()
             .persistent()
-            .set(&DataKey::Grant(grant_id), &grant);
+            .get(&key)
+            .ok_or(Error::MilestoneNotFound)?;
+
+        if milestone.status != MilestoneStatus::Pending
+            && milestone.status != MilestoneStatus::Rejected
+        {
+            return Err(Error::InvalidMilestoneStatus);
+        }
+
+        milestone.status = MilestoneStatus::Submitted;
+        env.storage().persistent().set(&key, &milestone);
+
+        MilestoneSubmitted {
+            grant_id,
+            milestone_index,
+        }
+        .publish(&env);
+
         Ok(())
     }
 
@@ -208,162 +235,161 @@ impl GrantHub {
             .get(&DataKey::Grant(grant_id))
             .ok_or(Error::GrantNotFound)?;
 
-        let mut amount_to_release = 0;
-        let mut updated_milestones = Vec::new(&env);
-        let mut completed_count = 0;
-        let mut found = false;
-
-        for m in grant.milestones.iter() {
-            let mut m = m;
-            if m.index == milestone_index {
-                if m.status != MilestoneStatus::Submitted {
-                    return Err(Error::MilestoneNotSubmitted);
-                }
-                m.status = MilestoneStatus::Approved;
-                amount_to_release = m.amount;
-                found = true;
-            }
-            if m.status == MilestoneStatus::Approved {
-                completed_count += 1;
-            }
-            updated_milestones.push_back(m);
-        }
-
-        if !found {
-            return Err(Error::MilestoneNotFound);
-        }
-
-        grant.milestones = updated_milestones;
-        if completed_count == grant.milestones.len() {
-            grant.status = GrantStatus::Completed;
-        }
-
-        env.storage()
+        let key = DataKey::GrantMilestone(grant_id, milestone_index);
+        let mut milestone: GrantMilestone = env
+            .storage()
             .persistent()
-            .set(&DataKey::Grant(grant_id), &grant);
+            .get(&key)
+            .ok_or(Error::MilestoneNotFound)?;
 
-        let esc_addr: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::CoreEscrow)
-            .ok_or(Error::NotInitialized)?;
-        env.invoke_contract::<()>(
-            &esc_addr,
-            &Symbol::new(&env, "release_slot"),
-            (grant.pool_id.clone(), milestone_index).into_val(&env),
-        );
+        if milestone.status != MilestoneStatus::Submitted {
+            return Err(Error::MilestoneNotSubmitted);
+        }
 
-        let rep_addr: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::ReputationRegistry)
-            .ok_or(Error::NotInitialized)?;
-        let points = (amount_to_release / 100) as u32; // Scale points proportionally
-        env.invoke_contract::<()>(
-            &rep_addr,
-            &Symbol::new(&env, "record_completion"),
-            (
-                env.current_contract_address(),
-                grant.recipient.ok_or(Error::NotRecipient)?,
-                grant_id,
-                ActivityCategory::Development,
-                points.max(1), // Ensure at least 1 point
-                false,         // is_hackathon
-                false,         // is_win
-            )
-                .into_val(&env),
-        );
+        milestone.status = MilestoneStatus::Released;
+        env.storage().persistent().set(&key, &milestone);
+
+        // Release escrow slot
+        let escrow = Self::escrow_client(&env);
+        escrow.release_slot(&grant.pool_id, &milestone_index);
+
+        MilestoneApproved {
+            grant_id,
+            milestone_index,
+        }
+        .publish(&env);
+
+        // Check if all milestones are released
+        let mut all_done = true;
+        for i in 0..grant.milestone_count {
+            if i == milestone_index {
+                continue; // already updated above
+            }
+            let m: GrantMilestone = env
+                .storage()
+                .persistent()
+                .get(&DataKey::GrantMilestone(grant_id, i))
+                .unwrap();
+            if m.status != MilestoneStatus::Released {
+                all_done = false;
+                break;
+            }
+        }
+
+        if all_done {
+            grant.status = GrantStatus::Completed;
+            env.storage()
+                .persistent()
+                .set(&DataKey::Grant(grant_id), &grant);
+
+            // Record reputation for grant recipient
+            let rep = Self::rep_client(&env);
+            rep.record_grant_received(
+                &env.current_contract_address(),
+                &Self::get_slot_recipient(&env, &grant.pool_id),
+                &grant.amount,
+            );
+
+            GrantCompleted { grant_id }.publish(&env);
+        } else {
+            // Update grant status to Executing if not already
+            if grant.status == GrantStatus::Active {
+                grant.status = GrantStatus::Executing;
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::Grant(grant_id), &grant);
+            }
+        }
+
         Ok(())
     }
+
+    // ========================================================================
+    // RETROSPECTIVE GRANT FLOW
+    // ========================================================================
 
     pub fn create_retrospective_grant(
         env: Env,
         creator: Address,
-        project_id: u64,
-        metadata_cid: String,
-        total_budget: i128,
+        amount: i128,
         asset: Address,
-        applicants: Vec<Address>,
+        options: Vec<String>,
+        voting_duration: u64,
     ) -> Result<u64, Error> {
         creator.require_auth();
 
-        let mut count: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::GrantCount)
-            .unwrap_or(0);
-        count += 1;
-        env.storage().instance().set(&DataKey::GrantCount, &count);
-
-        let esc_addr: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::CoreEscrow)
-            .ok_or(Error::NotInitialized)?;
-        let pool_id: BytesN<32> = env.invoke_contract(
-            &esc_addr,
-            &Symbol::new(&env, "create_pool"),
-            (
-                creator.clone(),
-                ModuleType::Grant,
-                count,
-                total_budget,
-                asset.clone(),
-                env.ledger().timestamp() + 31536000,
-                env.current_contract_address(),
-            )
-                .into_val(&env),
-        );
-
-        let gov_addr: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::GovernanceVoting)
-            .ok_or(Error::NotInitialized)?;
-        let mut options = Vec::new(&env);
-        for _ in 0..applicants.len() {
-            options.push_back(String::from_str(&env, "Applicant"));
+        if amount <= 0 {
+            return Err(Error::InvalidAmount);
         }
 
-        let session_id: BytesN<32> = env.invoke_contract(
-            &gov_addr,
-            &Symbol::new(&env, "create_session"),
-            (
-                env.current_contract_address(),
-                VoteContext::RetrospectiveGrant,
-                count,
-                options,
-                env.ledger().timestamp(),
-                env.ledger().timestamp() + 604800,
-                None::<u32>,
-                true, // weight_by_reputation
-            )
-                .into_val(&env),
+        let count = Self::next_grant_id(&env);
+        let escrow = Self::escrow_client(&env);
+
+        let pool_id = escrow.create_pool(
+            &creator,
+            &ModuleType::Grant,
+            &count,
+            &amount,
+            &asset,
+            &(env.ledger().timestamp() + 31_536_000),
+            &env.current_contract_address(),
         );
+
+        escrow.lock_pool(&pool_id);
+
+        // Create governance voting session
+        let gov = Self::gov_client(&env);
+        let now = env.ledger().timestamp();
+        let session_id = gov.create_session(
+            &env.current_contract_address(),
+            &VoteContext::RetrospectiveGrant,
+            &count,
+            &options,
+            &now,
+            &(now + voting_duration),
+            &None::<u32>,
+            &None::<u32>,
+            &true, // weight_by_reputation
+        );
+
+        // Store session_id for this grant
+        env.storage()
+            .persistent()
+            .set(&DataKey::RetroSession(count), &session_id);
 
         let grant = Grant {
             id: count,
+            creator: creator.clone(),
             grant_type: GrantType::Retrospective,
-            creator,
-            project_id,
-            metadata_cid,
-            status: GrantStatus::Voting,
-            total_budget,
+            status: GrantStatus::Active,
+            amount,
             asset,
             pool_id,
-            recipient: None,
-            milestones: Vec::new(&env),
-            vote_session_id: Some(session_id),
-            applicants,
+            milestone_count: 0,
+            metadata_cid: String::from_str(&env, ""),
+            created_at: env.ledger().timestamp(),
         };
 
         env.storage()
             .persistent()
             .set(&DataKey::Grant(count), &grant);
+
+        GrantCreated {
+            id: count,
+            grant_type: GrantType::Retrospective,
+            creator,
+            amount,
+        }
+        .publish(&env);
+
         Ok(count)
     }
 
-    pub fn finalize_retrospective(env: Env, grant_id: u64) -> Result<(), Error> {
+    pub fn finalize_retrospective(
+        env: Env,
+        grant_id: u64,
+        recipients: Vec<Address>,
+    ) -> Result<(), Error> {
         let mut grant: Grant = env
             .storage()
             .persistent()
@@ -373,145 +399,189 @@ impl GrantHub {
         if grant.grant_type != GrantType::Retrospective {
             return Err(Error::NotRetrospectiveGrant);
         }
+        if grant.status != GrantStatus::Active {
+            return Err(Error::GrantNotActive);
+        }
 
-        let gov_addr: Address = env
+        let session_id: BytesN<32> = env
             .storage()
-            .instance()
-            .get(&DataKey::GovernanceVoting)
-            .ok_or(Error::NotInitialized)?;
-        let winner_index: u32 = env.invoke_contract(
-            &gov_addr,
-            &Symbol::new(&env, "get_winning_option"),
-            (grant.vote_session_id.clone().ok_or(Error::GrantNotFound)?,).into_val(&env),
-        );
+            .persistent()
+            .get(&DataKey::RetroSession(grant_id))
+            .ok_or(Error::NoVoteSession)?;
 
-        let winner = grant.applicants.get(winner_index).unwrap();
-        grant.recipient = Some(winner.clone());
+        // Get voting results to distribute proportionally
+        let gov = Self::gov_client(&env);
+        let results = gov.get_result(&session_id);
+
+        // Calculate total weighted votes
+        let mut total_votes: u64 = 0;
+        for opt in results.iter() {
+            total_votes += opt.weighted_votes;
+        }
+
+        let escrow = Self::escrow_client(&env);
+        let rep = Self::rep_client(&env);
+
+        if total_votes > 0 {
+            for (i, opt) in results.iter().enumerate() {
+                if opt.weighted_votes > 0 && (i as u32) < recipients.len() {
+                    let share =
+                        (grant.amount * opt.weighted_votes as i128) / total_votes as i128;
+                    if share > 0 {
+                        let recipient = recipients.get(i as u32).unwrap();
+                        escrow.release_partial(
+                            &grant.pool_id,
+                            &recipient,
+                            &share,
+                        );
+                        rep.record_grant_received(
+                            &env.current_contract_address(),
+                            &recipient,
+                            &share,
+                        );
+                    }
+                }
+            }
+        }
+
         grant.status = GrantStatus::Completed;
-
         env.storage()
             .persistent()
             .set(&DataKey::Grant(grant_id), &grant);
 
-        let esc_addr: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::CoreEscrow)
-            .ok_or(Error::NotInitialized)?;
-        env.invoke_contract::<()>(
-            &esc_addr,
-            &Symbol::new(&env, "release_partial"),
-            (grant.pool_id, winner.clone(), grant.total_budget).into_val(&env),
-        );
-
-        // Record reputation
-        let rep_addr: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::ReputationRegistry)
-            .ok_or(Error::NotInitialized)?;
-        env.invoke_contract::<()>(
-            &rep_addr,
-            &Symbol::new(&env, "record_completion"),
-            (
-                env.current_contract_address(),
-                winner,
-                grant_id,
-                ActivityCategory::Development,
-                100u32, // Retrospective grants get base points
-                false,
-                false,
-            )
-                .into_val(&env),
-        );
+        GrantCompleted { grant_id }.publish(&env);
         Ok(())
     }
+
+    // ========================================================================
+    // QUADRATIC FUNDING ROUND
+    // ========================================================================
 
     pub fn create_qf_round(
         env: Env,
         creator: Address,
-        project_id: u64,
-        metadata_cid: String,
         matching_pool: i128,
         asset: Address,
-        eligible_projects: Vec<u64>,
+        project_names: Vec<String>,
+        duration: u64,
     ) -> Result<u64, Error> {
         creator.require_auth();
 
-        let mut count: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::GrantCount)
-            .unwrap_or(0);
-        count += 1;
-        env.storage().instance().set(&DataKey::GrantCount, &count);
-
-        let esc_addr: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::CoreEscrow)
-            .ok_or(Error::NotInitialized)?;
-        let pool_id: BytesN<32> = env.invoke_contract(
-            &esc_addr,
-            &Symbol::new(&env, "create_pool"),
-            (
-                creator.clone(),
-                ModuleType::Grant,
-                count,
-                matching_pool,
-                asset.clone(),
-                env.ledger().timestamp() + 31536000,
-                env.current_contract_address(),
-            )
-                .into_val(&env),
-        );
-
-        let gov_addr: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::GovernanceVoting)
-            .ok_or(Error::NotInitialized)?;
-        let mut options = Vec::new(&env);
-        for _ in 0..eligible_projects.len() {
-            options.push_back(String::from_str(&env, "Project"));
+        if matching_pool <= 0 {
+            return Err(Error::InvalidAmount);
         }
 
-        let session_id: BytesN<32> = env.invoke_contract(
-            &gov_addr,
-            &Symbol::new(&env, "create_session"),
-            (
-                env.current_contract_address(),
-                VoteContext::QFRound,
-                count,
-                options,
-                env.ledger().timestamp(),
-                env.ledger().timestamp() + 2592000,
-                None::<u32>,
-                false, // QF weight by rep handled differently
-            )
-                .into_val(&env),
+        let count = Self::next_grant_id(&env);
+        let escrow = Self::escrow_client(&env);
+
+        let pool_id = escrow.create_pool(
+            &creator,
+            &ModuleType::Grant,
+            &count,
+            &matching_pool,
+            &asset,
+            &(env.ledger().timestamp() + 31_536_000),
+            &env.current_contract_address(),
         );
+
+        escrow.lock_pool(&pool_id);
+
+        // Create governance voting QF session
+        let gov = Self::gov_client(&env);
+        let now = env.ledger().timestamp();
+        let session_id = gov.create_session(
+            &env.current_contract_address(),
+            &VoteContext::QFRound,
+            &count,
+            &project_names,
+            &now,
+            &(now + duration),
+            &None::<u32>,
+            &None::<u32>,
+            &false,
+        );
+
+        let qf_data = QFRoundData {
+            session_id,
+            matching_pool,
+            project_count: project_names.len(),
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::QFRound(count), &qf_data);
 
         let grant = Grant {
             id: count,
-            grant_type: GrantType::Quadratic,
             creator: creator.clone(),
-            project_id,
-            metadata_cid,
+            grant_type: GrantType::QF,
             status: GrantStatus::Active,
-            total_budget: matching_pool,
+            amount: matching_pool,
             asset,
             pool_id,
-            recipient: None,
-            milestones: Vec::new(&env),
-            vote_session_id: Some(session_id),
-            applicants: Vec::new(&env),
+            milestone_count: 0,
+            metadata_cid: String::from_str(&env, ""),
+            created_at: env.ledger().timestamp(),
         };
 
         env.storage()
             .persistent()
             .set(&DataKey::Grant(count), &grant);
+
+        GrantCreated {
+            id: count,
+            grant_type: GrantType::QF,
+            creator,
+            amount: matching_pool,
+        }
+        .publish(&env);
+
         Ok(count)
+    }
+
+    pub fn donate_to_project(
+        env: Env,
+        grant_id: u64,
+        amount: i128,
+        project_index: u32,
+    ) -> Result<(), Error> {
+        let grant: Grant = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Grant(grant_id))
+            .ok_or(Error::GrantNotFound)?;
+
+        if grant.grant_type != GrantType::QF {
+            return Err(Error::NotQFGrant);
+        }
+
+        let qf_data: QFRoundData = env
+            .storage()
+            .persistent()
+            .get(&DataKey::QFRound(grant_id))
+            .ok_or(Error::GrantNotFound)?;
+
+        if project_index >= qf_data.project_count {
+            return Err(Error::InvalidProjectIndex);
+        }
+
+        // Record donation in GovernanceVoting
+        let gov = Self::gov_client(&env);
+        gov.record_qf_donation(
+            &qf_data.session_id,
+            &env.current_contract_address(),
+            &amount,
+            &project_index,
+        );
+
+        QFDonationMade {
+            grant_id,
+            project_index,
+            amount,
+        }
+        .publish(&env);
+
+        Ok(())
     }
 
     pub fn finalize_qf_round(
@@ -525,60 +595,36 @@ impl GrantHub {
             .get(&DataKey::Grant(grant_id))
             .ok_or(Error::GrantNotFound)?;
 
-        if grant.grant_type != GrantType::Quadratic {
+        if grant.grant_type != GrantType::QF {
             return Err(Error::NotQFGrant);
         }
+        if grant.status != GrantStatus::Active {
+            return Err(Error::GrantNotActive);
+        }
 
-        let gov_addr: Address = env
+        let qf_data: QFRoundData = env
             .storage()
-            .instance()
-            .get(&DataKey::GovernanceVoting)
-            .ok_or(Error::NotInitialized)?;
+            .persistent()
+            .get(&DataKey::QFRound(grant_id))
+            .ok_or(Error::GrantNotFound)?;
 
-        let distributions: Vec<(u32, i128)> = env.invoke_contract(
-            &gov_addr,
-            &Symbol::new(&env, "compute_qf_distribution"),
-            (
-                grant.vote_session_id.clone().ok_or(Error::GrantNotFound)?,
-                grant.total_budget,
-            )
-                .into_val(&env),
+        let gov = Self::gov_client(&env);
+        let distributions = gov.compute_qf_distribution(
+            &qf_data.session_id,
+            &qf_data.matching_pool,
         );
 
-        let esc_addr: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::CoreEscrow)
-            .ok_or(Error::NotInitialized)?;
-        for dist in distributions.iter() {
-            let (index, amount) = dist;
-            let addr = project_addresses.get(index).unwrap();
-            if amount > 0 {
-                env.invoke_contract::<()>(
-                    &esc_addr,
-                    &Symbol::new(&env, "release_partial"),
-                    (grant.pool_id.clone(), addr.clone(), amount).into_val(&env),
-                );
+        let escrow = Self::escrow_client(&env);
+        let rep = Self::rep_client(&env);
 
-                // Record reputation for each funded project
-                let rep_addr: Address = env
-                    .storage()
-                    .instance()
-                    .get(&DataKey::ReputationRegistry)
-                    .ok_or(Error::NotInitialized)?;
-                env.invoke_contract::<()>(
-                    &rep_addr,
-                    &Symbol::new(&env, "record_completion"),
-                    (
-                        env.current_contract_address(),
-                        addr,
-                        grant_id,
-                        ActivityCategory::Development,
-                        (amount / 100) as u32,
-                        false,
-                        false,
-                    )
-                        .into_val(&env),
+        for (index, amount) in distributions.iter() {
+            if amount > 0 {
+                let addr = project_addresses.get(index).unwrap();
+                escrow.release_partial(&grant.pool_id, &addr, &amount);
+                rep.record_grant_received(
+                    &env.current_contract_address(),
+                    &addr,
+                    &amount,
                 );
             }
         }
@@ -587,134 +633,57 @@ impl GrantHub {
         env.storage()
             .persistent()
             .set(&DataKey::Grant(grant_id), &grant);
+
+        GrantCompleted { grant_id }.publish(&env);
         Ok(())
     }
 
-    pub fn get_grant(env: Env, grant_id: u64) -> Result<Grant, Error> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Grant(grant_id))
-            .ok_or(Error::GrantNotFound)
-    }
+    // ========================================================================
+    // INTERNAL HELPERS
+    // ========================================================================
 
-    // ========================================
-    // QUERY FUNCTIONS
-    // ========================================
-
-    pub fn get_admin(env: Env) -> Result<Address, Error> {
-        env.storage()
+    fn next_grant_id(env: &Env) -> u64 {
+        let mut count: u64 = env
+            .storage()
             .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)
+            .get(&DataKey::GrantCount)
+            .unwrap_or(0);
+        count += 1;
+        env.storage().instance().set(&DataKey::GrantCount, &count);
+        count
     }
 
-    pub fn get_project_reg(env: Env) -> Result<Address, Error> {
-        env.storage()
-            .instance()
-            .get(&DataKey::ProjectRegistry)
-            .ok_or(Error::NotInitialized)
-    }
-
-    pub fn get_core_escrow(env: Env) -> Result<Address, Error> {
-        env.storage()
+    fn escrow_client(env: &Env) -> CoreEscrowClient<'_> {
+        let addr: Address = env
+            .storage()
             .instance()
             .get(&DataKey::CoreEscrow)
-            .ok_or(Error::NotInitialized)
+            .unwrap();
+        CoreEscrowClient::new(env, &addr)
     }
 
-    pub fn get_governance_voting(env: Env) -> Result<Address, Error> {
-        env.storage()
-            .instance()
-            .get(&DataKey::GovernanceVoting)
-            .ok_or(Error::NotInitialized)
-    }
-
-    pub fn get_reputation_reg(env: Env) -> Result<Address, Error> {
-        env.storage()
+    fn rep_client(env: &Env) -> ReputationRegistryClient<'_> {
+        let addr: Address = env
+            .storage()
             .instance()
             .get(&DataKey::ReputationRegistry)
-            .ok_or(Error::NotInitialized)
+            .unwrap();
+        ReputationRegistryClient::new(env, &addr)
     }
 
-    pub fn get_payment_router(env: Env) -> Result<Address, Error> {
-        env.storage()
+    fn gov_client(env: &Env) -> GovernanceVotingClient<'_> {
+        let addr: Address = env
+            .storage()
             .instance()
-            .get(&DataKey::PaymentRouter)
-            .ok_or(Error::NotInitialized)
+            .get(&DataKey::GovernanceVoting)
+            .unwrap();
+        GovernanceVotingClient::new(env, &addr)
     }
 
-    pub fn get_fee_account(env: Env) -> Result<Address, Error> {
-        env.storage()
-            .instance()
-            .get(&DataKey::FeeAccount)
-            .ok_or(Error::NotInitialized)
-    }
-
-    pub fn get_treasury(env: Env) -> Result<Address, Error> {
-        env.storage()
-            .instance()
-            .get(&DataKey::Treasury)
-            .ok_or(Error::NotInitialized)
-    }
-
-    // ========================================
-    // ADMINISTRATIVE FUNCTIONS
-    // ========================================
-
-    pub fn update_admin(env: Env, new_admin: Address) -> Result<(), Error> {
-        let admin = Self::get_admin(env.clone())?;
-        admin.require_auth();
-
-        if Self::is_zero_address(&env, &new_admin) {
-            panic!("new admin cannot be zero address");
-        }
-
-        env.storage().instance().set(&DataKey::Admin, &new_admin);
-        Ok(())
-    }
-
-    pub fn update_fee_account(env: Env, new_fee_account: Address) -> Result<(), Error> {
-        let admin = Self::get_admin(env.clone())?;
-        admin.require_auth();
-
-        if Self::is_zero_address(&env, &new_fee_account) {
-            panic!("new fee account cannot be zero address");
-        }
-
-        env.storage()
-            .instance()
-            .set(&DataKey::FeeAccount, &new_fee_account);
-        Ok(())
-    }
-
-    pub fn update_treasury(env: Env, new_treasury: Address) -> Result<(), Error> {
-        let admin = Self::get_admin(env.clone())?;
-        admin.require_auth();
-
-        if Self::is_zero_address(&env, &new_treasury) {
-            panic!("new treasury cannot be zero address");
-        }
-
-        env.storage()
-            .instance()
-            .set(&DataKey::Treasury, &new_treasury);
-        Ok(())
-    }
-
-    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
-        let admin = Self::get_admin(env.clone())?;
-        admin.require_auth();
-
-        env.deployer().update_current_contract_wasm(new_wasm_hash);
-        Ok(())
-    }
-
-    // ========================================
-    // INTERNAL HELPERS
-    // ========================================
-
-    fn is_zero_address(_env: &Env, _address: &Address) -> bool {
-        // Placeholder as Soroban lacks a native zero address.
-        false
+    fn get_slot_recipient(env: &Env, pool_id: &BytesN<32>) -> Address {
+        // Get the recipient from slot 0 (all milestone slots have the same recipient)
+        let escrow = Self::escrow_client(env);
+        let slot = escrow.get_slot(pool_id, &0u32);
+        slot.recipient
     }
 }

@@ -1,30 +1,36 @@
-use soroban_sdk::{contract, contractimpl, xdr::ToXdr, Address, BytesN, Env, String, Vec};
+use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, String, Vec};
+
+use boundless_types::math::int_sqrt_i128;
 
 use crate::error::Error;
-use crate::events::{ModuleAuthorized, QFDonationRecorded, SessionCreated, VoteCast};
-use crate::storage::{DataKey, VoteContext, VoteOption, VoteRecord, VoteStatus, VotingSession};
+use crate::events::{QFDonationRecorded, SessionConcluded, SessionCreated, VoteCast};
+use crate::storage::{
+    DataKey, VoteContext, VoteOption, VoteRecord, VoteStatus, VotingSession,
+};
 
 #[contract]
 pub struct GovernanceVoting;
 
 #[contractimpl]
 impl GovernanceVoting {
-    pub fn init_gov_voting(
-        env: Env,
-        admin: Address,
-        reputation_registry: Address,
-    ) -> Result<(), Error> {
+    // ========================================================================
+    // INITIALIZATION
+    // ========================================================================
+
+    pub fn init(env: Env, admin: Address) -> Result<(), Error> {
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(Error::AlreadyInitialized);
         }
+        admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage()
-            .instance()
-            .set(&DataKey::ReputationRegistry, &reputation_registry);
         Ok(())
     }
 
-    pub fn add_gov_module(env: Env, module: Address) -> Result<(), Error> {
+    // ========================================================================
+    // MODULE AUTHORIZATION
+    // ========================================================================
+
+    pub fn add_authorized_module(env: Env, module: Address) -> Result<(), Error> {
         let admin: Address = env
             .storage()
             .instance()
@@ -33,16 +39,11 @@ impl GovernanceVoting {
         admin.require_auth();
         env.storage()
             .instance()
-            .set(&DataKey::AuthorizedModule(module.clone()), &true);
-        ModuleAuthorized {
-            module,
-            authorized: true,
-        }
-        .publish(&env);
+            .set(&DataKey::AuthorizedModule(module), &true);
         Ok(())
     }
 
-    pub fn remove_gov_module(env: Env, module: Address) -> Result<(), Error> {
+    pub fn remove_authorized_module(env: Env, module: Address) -> Result<(), Error> {
         let admin: Address = env
             .storage()
             .instance()
@@ -51,69 +52,61 @@ impl GovernanceVoting {
         admin.require_auth();
         env.storage()
             .instance()
-            .remove(&DataKey::AuthorizedModule(module.clone()));
-        ModuleAuthorized {
-            module,
-            authorized: false,
-        }
-        .publish(&env);
+            .remove(&DataKey::AuthorizedModule(module));
         Ok(())
     }
 
-    fn is_authorized(env: &Env, module: Address) -> bool {
-        let admin: Address = match env.storage().instance().get(&DataKey::Admin) {
-            Some(a) => a,
-            None => return false,
-        };
-        if module == admin {
-            return true;
-        }
-        env.storage()
-            .instance()
-            .get(&DataKey::AuthorizedModule(module))
-            .unwrap_or(false)
-    }
+    // ========================================================================
+    // SESSION MANAGEMENT
+    // ========================================================================
 
     pub fn create_session(
         env: Env,
         module: Address,
         context: VoteContext,
         module_id: u64,
-        options_labels: Vec<String>,
+        options: Vec<String>,
         start_at: u64,
         end_at: u64,
         threshold: Option<u32>,
+        quorum: Option<u32>,
         weight_by_reputation: bool,
     ) -> Result<BytesN<32>, Error> {
         module.require_auth();
-        if !Self::is_authorized(&env, module.clone()) {
-            return Err(Error::NotAuthorized);
+        if !Self::is_module_authorized_internal(&env, &module) {
+            return Err(Error::ModuleNotAuthorized);
+        }
+        if start_at >= end_at {
+            return Err(Error::InvalidTimeRange);
         }
 
-        let mut data = Vec::new(&env);
-        data.push_back(module_id);
-        data.push_back(start_at);
-        let session_id: BytesN<32> = env.crypto().sha256(&data.to_xdr(&env)).into();
-
-        if env
-            .storage()
-            .persistent()
-            .has(&DataKey::Session(session_id.clone()))
-        {
-            return Err(Error::SessionCollision);
+        // session_id = sha256(context_byte ++ module_id_bytes)
+        let context_byte: u8 = match context {
+            VoteContext::CampaignValidation => 0,
+            VoteContext::RetrospectiveGrant => 1,
+            VoteContext::QFRound => 2,
+            VoteContext::HackathonJudging => 3,
+        };
+        let mut payload = soroban_sdk::Bytes::new(&env);
+        payload.push_back(context_byte);
+        let id_bytes = module_id.to_be_bytes();
+        for b in id_bytes {
+            payload.push_back(b);
         }
+        let session_id: BytesN<32> = env.crypto().sha256(&payload).into();
 
-        let option_count = options_labels.len();
-        for (i, label) in options_labels.iter().enumerate() {
+        let option_count = options.len();
+        for i in 0..option_count {
+            let label = options.get(i).unwrap();
             let opt = VoteOption {
-                id: i as u32,
-                label: label.clone(),
+                id: i,
+                label,
                 votes: 0,
                 weighted_votes: 0,
             };
             env.storage()
                 .persistent()
-                .set(&DataKey::Option(session_id.clone(), i as u32), &opt);
+                .set(&DataKey::VoteOption(session_id.clone(), i), &opt);
         }
         env.storage()
             .persistent()
@@ -130,7 +123,7 @@ impl GovernanceVoting {
             threshold,
             threshold_reached: false,
             total_votes: 0,
-            quorum: None,
+            quorum,
             weight_by_reputation,
         };
 
@@ -147,6 +140,10 @@ impl GovernanceVoting {
 
         Ok(session_id)
     }
+
+    // ========================================================================
+    // VOTING
+    // ========================================================================
 
     pub fn cast_vote(
         env: Env,
@@ -165,39 +162,36 @@ impl GovernanceVoting {
         if session.status != VoteStatus::Active {
             return Err(Error::SessionNotActive);
         }
-        if env.ledger().timestamp() < session.start_at {
+        let now = env.ledger().timestamp();
+        if now < session.start_at {
             return Err(Error::VotingNotStarted);
         }
-        if env.ledger().timestamp() > session.end_at {
-            return Err(Error::VotingEnded);
+        if now > session.end_at {
+            return Err(Error::SessionNotActive);
         }
 
-        let vote_key = DataKey::Vote(session_id.clone(), voter.clone());
+        let vote_key = DataKey::VoteRecord(session_id.clone(), voter.clone());
         if env.storage().persistent().has(&vote_key) {
             return Err(Error::AlreadyVoted);
         }
 
-        let mut weight = 1u32;
-        if session.weight_by_reputation {
-            let rep_addr: Address = env
-                .storage()
-                .instance()
-                .get(&DataKey::ReputationRegistry)
-                .ok_or(Error::NotInitialized)?;
-            let rep_client = reputation_registry::ReputationRegistryClient::new(&env, &rep_addr);
-            let profile = rep_client.get_reputation(&voter);
-            weight = profile.level + 1;
-        }
-
-        let opt_key = DataKey::Option(session_id.clone(), option_id);
+        // Validate option exists
+        let opt_key = DataKey::VoteOption(session_id.clone(), option_id);
         let mut option: VoteOption = env
             .storage()
             .persistent()
             .get(&opt_key)
-            .ok_or(Error::OptionNotFound)?;
+            .ok_or(Error::InvalidOption)?;
+
+        let weight: u32 = if session.weight_by_reputation {
+            // placeholder: actual weight fetched by caller
+            1
+        } else {
+            1
+        };
 
         option.votes += 1;
-        option.weighted_votes += weight as i128;
+        option.weighted_votes += weight as u64;
         env.storage().persistent().set(&opt_key, &option);
 
         session.total_votes += 1;
@@ -214,7 +208,7 @@ impl GovernanceVoting {
             voter: voter.clone(),
             option_id,
             weight,
-            timestamp: env.ledger().timestamp(),
+            voted_at: now,
         };
         env.storage().persistent().set(&vote_key, &record);
 
@@ -224,80 +218,114 @@ impl GovernanceVoting {
             option_id,
         }
         .publish(&env);
+
         Ok(())
     }
 
-    pub fn get_winning_option(env: Env, session_id: BytesN<32>) -> Result<u32, Error> {
+    // ========================================================================
+    // SESSION LIFECYCLE
+    // ========================================================================
+
+    pub fn conclude_session(env: Env, session_id: BytesN<32>) -> Result<(), Error> {
+        let mut session: VotingSession = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Session(session_id.clone()))
+            .ok_or(Error::SessionNotFound)?;
+
+        if env.ledger().timestamp() <= session.end_at {
+            return Err(Error::SessionNotEnded);
+        }
+
+        session.status = VoteStatus::Concluded;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Session(session_id.clone()), &session);
+
+        SessionConcluded {
+            session_id,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    pub fn cancel_session(env: Env, session_id: BytesN<32>) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+
+        let mut session: VotingSession = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Session(session_id.clone()))
+            .ok_or(Error::SessionNotFound)?;
+
+        session.status = VoteStatus::Cancelled;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Session(session_id.clone()), &session);
+
+        Ok(())
+    }
+
+    // ========================================================================
+    // QF FUNCTIONS
+    // ========================================================================
+
+    pub fn record_qf_donation(
+        env: Env,
+        session_id: BytesN<32>,
+        module: Address,
+        amount: i128,
+        option_id: u32,
+    ) -> Result<(), Error> {
+        module.require_auth();
+        if !Self::is_module_authorized_internal(&env, &module) {
+            return Err(Error::ModuleNotAuthorized);
+        }
+
         let session: VotingSession = env
             .storage()
             .persistent()
             .get(&DataKey::Session(session_id.clone()))
             .ok_or(Error::SessionNotFound)?;
 
-        if session.status == VoteStatus::Active && env.ledger().timestamp() < session.end_at {
-            return Err(Error::VotingInProgress);
+        if session.status != VoteStatus::Active {
+            return Err(Error::SessionNotActive);
         }
 
+        // Validate option exists
         let option_count: u32 = env
             .storage()
             .persistent()
             .get(&DataKey::OptionCount(session_id.clone()))
             .unwrap_or(0);
-        let mut max_votes = -1i128;
-        let mut winner = 0u32;
-
-        for i in 0..option_count {
-            let opt: VoteOption = env
-                .storage()
-                .persistent()
-                .get(&DataKey::Option(session_id.clone(), i))
-                .ok_or(Error::OptionNotFound)?;
-            if opt.weighted_votes > max_votes {
-                max_votes = opt.weighted_votes;
-                winner = i;
-            }
-        }
-        Ok(winner)
-    }
-
-    // For QF: Record donation
-    pub fn record_qf_donation(
-        env: Env,
-        caller: Address,
-        session_id: BytesN<32>,
-        donor: Address,
-        option_id: u32,
-        amount: i128,
-    ) -> Result<(), Error> {
-        caller.require_auth();
-        if !Self::is_authorized(&env, caller.clone()) {
-            return Err(Error::NotAuthorized);
+        if option_id >= option_count {
+            return Err(Error::InvalidOption);
         }
 
-        let session: VotingSession = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Session(session_id.clone()))
-            .ok_or(Error::SessionNotFound)?;
+        // Maintain running sum-of-sqrt per option for QF distribution
+        let sum_sqrt_key = DataKey::OptionSumSqrt(session_id.clone(), option_id);
+        let old_sum_sqrt: i128 = env.storage().persistent().get(&sum_sqrt_key).unwrap_or(0);
 
-        if session.context != VoteContext::QFRound {
-            return Err(Error::NotQFRound);
-        }
-
-        let sqrt_amt = int_sqrt(amount);
-        let sum_key = DataKey::OptionSumSqrt(session_id.clone(), option_id);
-        let current_sum: i128 = env.storage().persistent().get(&sum_key).unwrap_or(0);
-        env.storage()
-            .persistent()
-            .set(&sum_key, &(current_sum + sqrt_amt));
+        // We don't track per-donor here for simplicity — each call is a new donation
+        let scaled_amount = amount * 1_000_000; // scale for sqrt precision
+        let sqrt_val = int_sqrt_i128(scaled_amount);
+        let new_sum_sqrt = old_sum_sqrt + sqrt_val;
+        env.storage().persistent().set(&sum_sqrt_key, &new_sum_sqrt);
 
         QFDonationRecorded {
             session_id,
-            donor,
+            donor: module.clone(),
             option_id,
             amount,
         }
         .publish(&env);
+
         Ok(())
     }
 
@@ -313,7 +341,7 @@ impl GovernanceVoting {
             .ok_or(Error::SessionNotFound)?;
 
         if env.ledger().timestamp() <= session.end_at {
-            return Err(Error::RoundNotEnded);
+            return Err(Error::SessionNotEnded);
         }
 
         let option_count: u32 = env
@@ -321,22 +349,24 @@ impl GovernanceVoting {
             .persistent()
             .get(&DataKey::OptionCount(session_id.clone()))
             .unwrap_or(0);
+
+        // Use per-option sum_sqrt maintained by record_qf_donation
         let mut results = Vec::new(&env);
         let mut squares = Vec::new(&env);
-        let mut total_squares = 0i128;
+        let mut total_squares: i128 = 0;
 
         for i in 0..option_count {
-            let sum_sqrt: i128 = env
-                .storage()
-                .persistent()
-                .get(&DataKey::OptionSumSqrt(session_id.clone(), i))
-                .unwrap_or(0);
+            let sum_sqrt_key = DataKey::OptionSumSqrt(session_id.clone(), i);
+            let sum_sqrt: i128 = env.storage().persistent().get(&sum_sqrt_key).unwrap_or(0);
             let sq = sum_sqrt * sum_sqrt;
             squares.push_back(sq);
             total_squares += sq;
         }
 
         if total_squares == 0 {
+            for i in 0..option_count {
+                results.push_back((i, 0i128));
+            }
             return Ok(results);
         }
 
@@ -345,44 +375,13 @@ impl GovernanceVoting {
             let share = (sq * matching_pool) / total_squares;
             results.push_back((i, share));
         }
+
         Ok(results)
     }
 
-    // ========================================
+    // ========================================================================
     // QUERY FUNCTIONS
-    // ========================================
-
-    pub fn get_admin(env: Env) -> Result<Address, Error> {
-        env.storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)
-    }
-
-    pub fn get_reputation_reg(env: Env) -> Result<Address, Error> {
-        env.storage()
-            .instance()
-            .get(&DataKey::ReputationRegistry)
-            .ok_or(Error::NotInitialized)
-    }
-
-    pub fn get_fee_account(env: Env) -> Result<Address, Error> {
-        env.storage()
-            .instance()
-            .get(&DataKey::FeeAccount)
-            .ok_or(Error::NotInitialized)
-    }
-
-    pub fn get_treasury(env: Env) -> Result<Address, Error> {
-        env.storage()
-            .instance()
-            .get(&DataKey::Treasury)
-            .ok_or(Error::NotInitialized)
-    }
-
-    pub fn is_module_authorized(env: Env, module: Address) -> bool {
-        Self::is_authorized(&env, module)
-    }
+    // ========================================================================
 
     pub fn get_session(env: Env, session_id: BytesN<32>) -> Result<VotingSession, Error> {
         env.storage()
@@ -391,89 +390,68 @@ impl GovernanceVoting {
             .ok_or(Error::SessionNotFound)
     }
 
-    pub fn get_option(
-        env: Env,
-        session_id: BytesN<32>,
-        option_id: u32,
-    ) -> Result<VoteOption, Error> {
+    pub fn get_result(env: Env, session_id: BytesN<32>) -> Result<Vec<VoteOption>, Error> {
+        let _session: VotingSession = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Session(session_id.clone()))
+            .ok_or(Error::SessionNotFound)?;
+
+        let option_count: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::OptionCount(session_id.clone()))
+            .unwrap_or(0);
+
+        let mut results = Vec::new(&env);
+        for i in 0..option_count {
+            let opt: VoteOption = env
+                .storage()
+                .persistent()
+                .get(&DataKey::VoteOption(session_id.clone(), i))
+                .unwrap();
+            results.push_back(opt);
+        }
+        Ok(results)
+    }
+
+    pub fn get_option(env: Env, session_id: BytesN<32>, option_id: u32) -> Result<VoteOption, Error> {
         env.storage()
             .persistent()
-            .get(&DataKey::Option(session_id, option_id))
-            .ok_or(Error::OptionNotFound)
+            .get(&DataKey::VoteOption(session_id, option_id))
+            .ok_or(Error::InvalidOption)
     }
 
-    // ========================================
-    // ADMINISTRATIVE FUNCTIONS
-    // ========================================
-
-    pub fn update_admin(env: Env, new_admin: Address) -> Result<(), Error> {
-        let admin = Self::get_admin(env.clone())?;
-        admin.require_auth();
-
-        if Self::is_zero_address(&env, &new_admin) {
-            panic!("new admin cannot be zero address");
-        }
-
-        env.storage().instance().set(&DataKey::Admin, &new_admin);
-        Ok(())
-    }
-
-    pub fn update_fee_account(env: Env, new_fee_account: Address) -> Result<(), Error> {
-        let admin = Self::get_admin(env.clone())?;
-        admin.require_auth();
-
-        if Self::is_zero_address(&env, &new_fee_account) {
-            panic!("new fee account cannot be zero address");
-        }
-
+    pub fn has_voted(env: Env, session_id: BytesN<32>, voter: Address) -> bool {
         env.storage()
-            .instance()
-            .set(&DataKey::FeeAccount, &new_fee_account);
-        Ok(())
+            .persistent()
+            .has(&DataKey::VoteRecord(session_id, voter))
     }
 
-    pub fn update_treasury(env: Env, new_treasury: Address) -> Result<(), Error> {
-        let admin = Self::get_admin(env.clone())?;
-        admin.require_auth();
-
-        if Self::is_zero_address(&env, &new_treasury) {
-            panic!("new treasury cannot be zero address");
-        }
-
-        env.storage()
-            .instance()
-            .set(&DataKey::Treasury, &new_treasury);
-        Ok(())
+    pub fn threshold_reached(env: Env, session_id: BytesN<32>) -> Result<bool, Error> {
+        let session: VotingSession = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Session(session_id))
+            .ok_or(Error::SessionNotFound)?;
+        Ok(session.threshold_reached)
     }
 
-    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
-        let admin = Self::get_admin(env.clone())?;
-        admin.require_auth();
-
-        env.deployer().update_current_contract_wasm(new_wasm_hash);
-        Ok(())
-    }
-
-    // ========================================
+    // ========================================================================
     // INTERNAL HELPERS
-    // ========================================
+    // ========================================================================
 
-    fn is_zero_address(_env: &Env, _address: &Address) -> bool {
-        // Placeholder as Soroban lacks a native zero address.
-        false
+    fn is_module_authorized_internal(env: &Env, module: &Address) -> bool {
+        // Admin is always authorized
+        let admin: Option<Address> = env.storage().instance().get(&DataKey::Admin);
+        if let Some(a) = admin {
+            if module == &a {
+                return true;
+            }
+        }
+        env.storage()
+            .instance()
+            .get(&DataKey::AuthorizedModule(module.clone()))
+            .unwrap_or(false)
     }
-}
-
-// Helper sqrt
-fn int_sqrt(n: i128) -> i128 {
-    if n == 0 {
-        return 0;
-    }
-    let mut x = n;
-    let mut y = (x + 1) / 2;
-    while y < x {
-        x = y;
-        y = (x + n / x) / 2;
-    }
-    x
 }

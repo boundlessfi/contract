@@ -1,6 +1,6 @@
 use soroban_sdk::{contractevent, Address};
 
-#[contractevent(topics = ["ScoreUpdated"], data_format = "vec")]
+#[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ScoreUpdated {
     #[topic]
@@ -9,10 +9,35 @@ pub struct ScoreUpdated {
     pub level: u32,
 }
 
-#[contractevent(topics = ["ModuleAuthorized"], data_format = "single-value")]
+#[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ModuleAuthorized {
     #[topic]
     pub module: Address,
     pub authorized: bool,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CreditsSpent {
+    #[topic]
+    pub user: Address,
+    pub remaining: u32,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CreditsAwarded {
+    #[topic]
+    pub user: Address,
+    pub amount: u32,
+    pub remaining: u32,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CreditsRecharged {
+    #[topic]
+    pub user: Address,
+    pub remaining: u32,
 }

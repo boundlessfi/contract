@@ -18,6 +18,14 @@ pub struct BountyApplied {
 
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BountyClaimed {
+    #[topic]
+    pub bounty_id: u64,
+    pub claimer: Address,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BountyAssigned {
     #[topic]
     pub bounty_id: u64,
@@ -34,10 +42,10 @@ pub struct WorkSubmitted {
 
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SubmissionAccepted {
+pub struct SubmissionApproved {
     #[topic]
     pub bounty_id: u64,
-    pub assignee: Address,
+    pub winner: Address,
 }
 
 #[contractevent]
@@ -53,4 +61,12 @@ pub struct ApplicationRejected {
     #[topic]
     pub bounty_id: u64,
     pub applicant: Address,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SplitApproved {
+    #[topic]
+    pub bounty_id: u64,
+    pub slot_index: u32,
 }

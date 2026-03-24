@@ -1,5 +1,5 @@
 [package]
-name = "hackathon-registry"
+name = "hackathon_registry"
 version = "0.0.0"
 edition = "2021"
 publish = false
@@ -10,10 +10,9 @@ doctest = false
 
 [dependencies]
 soroban-sdk = { workspace = true }
+boundless-types = { workspace = true }
 core_escrow = { path = "../core_escrow" }
 reputation_registry = { path = "../reputation_registry" }
-project_registry = { path = "../project_registry" }
-governance_voting = { path = "../governance_voting" }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }

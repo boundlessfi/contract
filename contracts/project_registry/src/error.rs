@@ -4,10 +4,12 @@ use soroban_sdk::contracterror;
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum Error {
-    AlreadyInitialized = 1,
-    ProjectNotFound = 2,
-    ProjectSuspended = 3,
-    InsufficientDeposit = 4,
-    UnauthorizedCaller = 5,
-    NotInitialized = 6,
+    AlreadyInitialized = 600,
+    NotInitialized = 601,
+    NotAuthorized = 602,
+    ProjectNotFound = 603,
+    ProjectSuspended = 604,
+    BudgetExceedsLimit = 605,
+    ModuleNotAuthorized = 606,
+    InsufficientDeposit = 607,
 }

@@ -13,7 +13,7 @@ members = [
 ]
 
 [workspace.dependencies]
-soroban-sdk = "22"
+soroban-sdk = "25"
 boundless-types = { path = "packages/boundless-types" }
 
 [profile.release]

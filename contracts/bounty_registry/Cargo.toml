@@ -10,6 +10,7 @@ doctest = false
 
 [dependencies]
 soroban-sdk = { workspace = true }
+boundless-types = { workspace = true }
 core_escrow = { path = "../core_escrow" }
 reputation_registry = { path = "../reputation_registry" }
 

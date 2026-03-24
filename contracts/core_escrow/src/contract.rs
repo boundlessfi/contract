@@ -1,44 +1,50 @@
 use crate::error::Error;
 use crate::events::{
-    InsuranceClaimed, InsuranceContributed, PoolCreated, PoolLocked, Refunded, SlotReleased,
+    FeeCharged, FeeRateUpdated, InsuranceClaimed, InsuranceContributed, PoolCreated, PoolLocked,
+    Refunded, SlotReleased,
 };
-use crate::storage::{DataKey, EscrowPool, InsuranceFund, ModuleType, ReleaseSlot};
-use soroban_sdk::{contract, contractimpl, token, xdr::ToXdr, Address, BytesN, Env, Vec};
+use crate::storage::{DataKey, EscrowPool, FeeConfig, FeeRecord, InsuranceFund, ReleaseSlot};
+use boundless_types::{math, ModuleType, SubType};
+use soroban_sdk::{contract, contractimpl, token, Address, Bytes, BytesN, Env, Vec};
+
+const MAX_FEE_BPS: u32 = 1000;
+const MIN_INSURANCE_CUT_BPS: u32 = 500;
+const MAX_INSURANCE_CUT_BPS: u32 = 3000;
 
 #[contract]
 pub struct CoreEscrow;
 
 #[contractimpl]
 impl CoreEscrow {
-    pub fn init_core_escrow(env: Env, admin: Address) -> Result<(), Error> {
+    // ========================================================================
+    // INITIALIZATION
+    // ========================================================================
+
+    pub fn init(env: Env, admin: Address, treasury: Address) -> Result<(), Error> {
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(Error::AlreadyInitialized);
         }
-
-        if Self::is_zero_address(&env, &admin) {
-            panic!("admin cannot be zero address");
-        }
-
+        admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
-
+        env.storage().instance().set(&DataKey::Treasury, &treasury);
+        env.storage()
+            .instance()
+            .set(&DataKey::FeeConfig, &FeeConfig::default_config());
+        env.storage()
+            .instance()
+            .set(&DataKey::RoutingPaused, &false);
+        env.storage().instance().set(&DataKey::Version, &1u32);
         Ok(())
     }
 
-    // ========================================
-    // QUERY FUNCTIONS
-    // ========================================
+    // ========================================================================
+    // QUERIES
+    // ========================================================================
 
     pub fn get_admin(env: Env) -> Result<Address, Error> {
         env.storage()
             .instance()
             .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)
-    }
-
-    pub fn get_fee_account(env: Env) -> Result<Address, Error> {
-        env.storage()
-            .instance()
-            .get(&DataKey::FeeAccount)
             .ok_or(Error::NotInitialized)
     }
 
@@ -63,76 +69,187 @@ impl CoreEscrow {
             .ok_or(Error::SlotNotFound)
     }
 
-    pub fn get_all_milestones(env: Env, pool_id: BytesN<32>) -> Result<Vec<ReleaseSlot>, Error> {
-        let mut milestones = Vec::new(&env);
-        let mut index = 0;
-        loop {
-            let key = DataKey::ReleaseSlot(pool_id.clone(), index);
-            if let Some(slot) = env.storage().persistent().get(&key) {
-                milestones.push_back(slot);
-                index += 1;
-            } else {
-                break;
-            }
-        }
-        Ok(milestones)
+    pub fn get_unreleased(env: Env, pool_id: BytesN<32>) -> Result<i128, Error> {
+        let pool: EscrowPool = env
+            .storage()
+            .persistent()
+            .get(&DataKey::EscrowPool(pool_id))
+            .ok_or(Error::PoolNotFound)?;
+        Ok(pool.total_deposited - pool.total_released - pool.total_refunded)
     }
 
-    // ========================================
-    // ADMINISTRATIVE FUNCTIONS
-    // ========================================
+    pub fn is_locked(env: Env, pool_id: BytesN<32>) -> Result<bool, Error> {
+        let pool: EscrowPool = env
+            .storage()
+            .persistent()
+            .get(&DataKey::EscrowPool(pool_id))
+            .ok_or(Error::PoolNotFound)?;
+        Ok(pool.locked)
+    }
+
+    pub fn get_insurance_balance(env: Env) -> i128 {
+        env.storage()
+            .instance()
+            .get(&DataKey::InsuranceFund)
+            .map(|f: InsuranceFund| f.balance)
+            .unwrap_or(0)
+    }
+
+    pub fn get_fee_config(env: Env) -> Result<FeeConfig, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::FeeConfig)
+            .ok_or(Error::NotInitialized)
+    }
+
+    pub fn get_fee_rate(env: Env, sub_type: SubType) -> Result<u32, Error> {
+        let config: FeeConfig = env
+            .storage()
+            .instance()
+            .get(&DataKey::FeeConfig)
+            .ok_or(Error::NotInitialized)?;
+        Ok(config.get_fee_bps(&sub_type))
+    }
+
+    pub fn calculate_fee(env: Env, gross: i128, sub_type: SubType) -> Result<(i128, i128), Error> {
+        let config: FeeConfig = env
+            .storage()
+            .instance()
+            .get(&DataKey::FeeConfig)
+            .ok_or(Error::NotInitialized)?;
+        let fee_bps = config.get_fee_bps(&sub_type);
+        let fee = math::calculate_fee_bps(gross, fee_bps);
+        let net = gross - fee;
+        Ok((fee, net))
+    }
+
+    pub fn calculate_pledge_cost(env: Env, pledge: i128) -> Result<i128, Error> {
+        let config: FeeConfig = env
+            .storage()
+            .instance()
+            .get(&DataKey::FeeConfig)
+            .ok_or(Error::NotInitialized)?;
+        let fee = math::calculate_fee_bps(pledge, config.crowdfund_fee_bps);
+        Ok(pledge + fee)
+    }
+
+    pub fn get_fee_record(env: Env, pool_id: BytesN<32>) -> Result<FeeRecord, Error> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::FeeRecord(pool_id))
+            .ok_or(Error::PoolNotFound)
+    }
+
+    // ========================================================================
+    // ADMIN FUNCTIONS
+    // ========================================================================
 
     pub fn update_admin(env: Env, new_admin: Address) -> Result<(), Error> {
-        let admin = Self::get_admin(env.clone())?;
+        let admin = Self::require_admin(&env)?;
         admin.require_auth();
-
-        if Self::is_zero_address(&env, &new_admin) {
-            panic!("new admin cannot be zero address");
-        }
-
         env.storage().instance().set(&DataKey::Admin, &new_admin);
         Ok(())
     }
 
-    pub fn update_fee_account(env: Env, new_fee_account: Address) -> Result<(), Error> {
-        let admin = Self::get_admin(env.clone())?;
-        admin.require_auth();
-
-        if Self::is_zero_address(&env, &new_fee_account) {
-            panic!("new fee account cannot be zero address");
-        }
-
-        env.storage()
-            .instance()
-            .set(&DataKey::FeeAccount, &new_fee_account);
-        Ok(())
-    }
-
     pub fn update_treasury(env: Env, new_treasury: Address) -> Result<(), Error> {
-        let admin = Self::get_admin(env.clone())?;
+        let admin = Self::require_admin(&env)?;
         admin.require_auth();
-
-        if Self::is_zero_address(&env, &new_treasury) {
-            panic!("new treasury cannot be zero address");
-        }
-
         env.storage()
             .instance()
             .set(&DataKey::Treasury, &new_treasury);
         Ok(())
     }
 
-    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
-        let admin = Self::get_admin(env.clone())?;
+    pub fn set_fee_rate(env: Env, sub_type: SubType, new_bps: u32) -> Result<(), Error> {
+        let admin = Self::require_admin(&env)?;
         admin.require_auth();
+        if new_bps > MAX_FEE_BPS {
+            return Err(Error::RateExceedsLimit);
+        }
+        let mut config: FeeConfig = env
+            .storage()
+            .instance()
+            .get(&DataKey::FeeConfig)
+            .ok_or(Error::NotInitialized)?;
+        let old_bps = config.get_fee_bps(&sub_type);
+        match sub_type {
+            SubType::BountyFCFS
+            | SubType::BountyApplication
+            | SubType::BountyContest
+            | SubType::BountySplit => config.bounty_fee_bps = new_bps,
+            SubType::CrowdfundPledge => config.crowdfund_fee_bps = new_bps,
+            SubType::GrantMilestone
+            | SubType::GrantRetrospective
+            | SubType::GrantQFMatchingPool => config.grant_fee_bps = new_bps,
+            SubType::HackathonMain | SubType::HackathonTrack => config.hackathon_fee_bps = new_bps,
+        }
+        env.storage().instance().set(&DataKey::FeeConfig, &config);
+        FeeRateUpdated { old_bps, new_bps }.publish(&env);
+        Ok(())
+    }
 
+    pub fn set_insurance_cut(env: Env, new_bps: u32) -> Result<(), Error> {
+        let admin = Self::require_admin(&env)?;
+        admin.require_auth();
+        if new_bps < MIN_INSURANCE_CUT_BPS || new_bps > MAX_INSURANCE_CUT_BPS {
+            return Err(Error::InsuranceCutOutOfRange);
+        }
+        let mut config: FeeConfig = env
+            .storage()
+            .instance()
+            .get(&DataKey::FeeConfig)
+            .ok_or(Error::NotInitialized)?;
+        config.insurance_cut_bps = new_bps;
+        env.storage().instance().set(&DataKey::FeeConfig, &config);
+        Ok(())
+    }
+
+    pub fn pause_routing(env: Env) -> Result<(), Error> {
+        let admin = Self::require_admin(&env)?;
+        admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::RoutingPaused, &true);
+        Ok(())
+    }
+
+    pub fn resume_routing(env: Env) -> Result<(), Error> {
+        let admin = Self::require_admin(&env)?;
+        admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::RoutingPaused, &false);
+        Ok(())
+    }
+
+    pub fn authorize_module(env: Env, module_addr: Address) -> Result<(), Error> {
+        let admin = Self::require_admin(&env)?;
+        admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::AuthorizedModule(module_addr), &true);
+        Ok(())
+    }
+
+    pub fn deauthorize_module(env: Env, module_addr: Address) -> Result<(), Error> {
+        let admin = Self::require_admin(&env)?;
+        admin.require_auth();
+        env.storage()
+            .instance()
+            .remove(&DataKey::AuthorizedModule(module_addr));
+        Ok(())
+    }
+
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
+        let admin = Self::require_admin(&env)?;
+        admin.require_auth();
         env.deployer().update_current_contract_wasm(new_wasm_hash);
         Ok(())
     }
 
-    // ========================================
-    // CORE ESCROW FUNCTIONS
-    // ========================================
+    // ========================================================================
+    // POOL MANAGEMENT
+    // ========================================================================
 
     pub fn create_pool(
         env: Env,
@@ -145,11 +262,10 @@ impl CoreEscrow {
         authorized_caller: Address,
     ) -> Result<BytesN<32>, Error> {
         owner.require_auth();
-
-        let mut data = Vec::new(&env);
-        data.push_back(module_id);
-        let pool_id: BytesN<32> = env.crypto().sha256(&data.to_xdr(&env)).into();
-
+        if total_amount < 0 {
+            return Err(Error::InvalidAmount);
+        }
+        let pool_id = Self::compute_pool_id(&env, &module, module_id);
         if env
             .storage()
             .persistent()
@@ -157,7 +273,6 @@ impl CoreEscrow {
         {
             return Err(Error::PoolAlreadyExists);
         }
-
         if total_amount > 0 {
             token::Client::new(&env, &asset).transfer(
                 &owner,
@@ -165,7 +280,6 @@ impl CoreEscrow {
                 &total_amount,
             );
         }
-
         let pool = EscrowPool {
             pool_id: pool_id.clone(),
             module,
@@ -179,11 +293,9 @@ impl CoreEscrow {
             created_at: env.ledger().timestamp(),
             expires_at,
         };
-
         env.storage()
             .persistent()
             .set(&DataKey::EscrowPool(pool_id.clone()), &pool);
-
         PoolCreated {
             pool_id: pool_id.clone(),
             owner,
@@ -191,7 +303,6 @@ impl CoreEscrow {
             total_amount,
         }
         .publish(&env);
-
         Ok(pool_id)
     }
 
@@ -199,28 +310,30 @@ impl CoreEscrow {
         env: Env,
         pool_id: BytesN<32>,
         amount: i128,
-        asset: Address,
         payer: Address,
     ) -> Result<(), Error> {
         payer.require_auth();
-
-        let key = DataKey::EscrowPool(pool_id.clone());
+        if amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+        let key = DataKey::EscrowPool(pool_id);
         let mut pool: EscrowPool = env
             .storage()
             .persistent()
             .get(&key)
             .ok_or(Error::PoolNotFound)?;
-
         if pool.locked {
             return Err(Error::PoolLocked);
         }
-        if asset != pool.asset {
-            return Err(Error::InvalidAsset);
-        }
-
-        token::Client::new(&env, &asset).transfer(&payer, &env.current_contract_address(), &amount);
-
-        pool.total_deposited += amount;
+        token::Client::new(&env, &pool.asset).transfer(
+            &payer,
+            &env.current_contract_address(),
+            &amount,
+        );
+        pool.total_deposited = pool
+            .total_deposited
+            .checked_add(amount)
+            .ok_or(Error::Overflow)?;
         env.storage().persistent().set(&key, &pool);
         Ok(())
     }
@@ -232,17 +345,16 @@ impl CoreEscrow {
             .persistent()
             .get(&key)
             .ok_or(Error::PoolNotFound)?;
-
         pool.authorized_caller.require_auth();
-
         if pool.locked {
             return Err(Error::PoolLocked);
         }
-
         pool.locked = true;
         env.storage().persistent().set(&key, &pool);
-
-        PoolLocked { pool_id }.publish(&env);
+        PoolLocked {
+            pool_id: pool_id.clone(),
+        }
+        .publish(&env);
         Ok(())
     }
 
@@ -257,9 +369,7 @@ impl CoreEscrow {
             .persistent()
             .get(&key)
             .ok_or(Error::PoolNotFound)?;
-
         pool.authorized_caller.require_auth();
-
         let mut total_slot_amount: i128 = 0;
         for (i, (recipient, amount)) in slots.iter().enumerate() {
             let slot = ReleaseSlot {
@@ -273,14 +383,22 @@ impl CoreEscrow {
             env.storage()
                 .persistent()
                 .set(&DataKey::ReleaseSlot(pool_id.clone(), i as u32), &slot);
-            total_slot_amount += amount;
+            total_slot_amount = total_slot_amount
+                .checked_add(amount)
+                .ok_or(Error::Overflow)?;
         }
-
         if total_slot_amount > pool.total_deposited {
             return Err(Error::SlotsExceedDeposit);
         }
+        env.storage()
+            .persistent()
+            .set(&DataKey::SlotCount(pool_id), &(slots.len() as u32));
         Ok(())
     }
+
+    // ========================================================================
+    // RELEASE FUNCTIONS
+    // ========================================================================
 
     pub fn release_slot(env: Env, pool_id: BytesN<32>, slot_index: u32) -> Result<(), Error> {
         let pool_key = DataKey::EscrowPool(pool_id.clone());
@@ -289,33 +407,29 @@ impl CoreEscrow {
             .persistent()
             .get(&pool_key)
             .ok_or(Error::PoolNotFound)?;
-
         pool.authorized_caller.require_auth();
-
         let slot_key = DataKey::ReleaseSlot(pool_id.clone(), slot_index);
         let mut slot: ReleaseSlot = env
             .storage()
             .persistent()
             .get(&slot_key)
             .ok_or(Error::SlotNotFound)?;
-
         if slot.released {
             return Err(Error::SlotAlreadyReleased);
         }
-
+        slot.released = true;
+        slot.released_at = Some(env.ledger().timestamp());
+        pool.total_released = pool
+            .total_released
+            .checked_add(slot.amount)
+            .ok_or(Error::Overflow)?;
+        env.storage().persistent().set(&pool_key, &pool);
+        env.storage().persistent().set(&slot_key, &slot);
         token::Client::new(&env, &pool.asset).transfer(
             &env.current_contract_address(),
             &slot.recipient,
             &slot.amount,
         );
-
-        slot.released = true;
-        slot.released_at = Some(env.ledger().timestamp());
-        pool.total_released += slot.amount;
-
-        env.storage().persistent().set(&pool_key, &pool);
-        env.storage().persistent().set(&slot_key, &slot);
-
         SlotReleased {
             pool_id,
             slot_index,
@@ -332,32 +446,33 @@ impl CoreEscrow {
         recipient: Address,
         amount: i128,
     ) -> Result<(), Error> {
+        if amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
         let pool_key = DataKey::EscrowPool(pool_id.clone());
         let mut pool: EscrowPool = env
             .storage()
             .persistent()
             .get(&pool_key)
             .ok_or(Error::PoolNotFound)?;
-
         pool.authorized_caller.require_auth();
-
         let remaining = pool.total_deposited - pool.total_released - pool.total_refunded;
         if amount > remaining {
             return Err(Error::InsufficientFunds);
         }
-
+        pool.total_released = pool
+            .total_released
+            .checked_add(amount)
+            .ok_or(Error::Overflow)?;
+        env.storage().persistent().set(&pool_key, &pool);
         token::Client::new(&env, &pool.asset).transfer(
             &env.current_contract_address(),
             &recipient,
             &amount,
         );
-
-        pool.total_released += amount;
-        env.storage().persistent().set(&pool_key, &pool);
-
         SlotReleased {
             pool_id,
-            slot_index: 999,
+            slot_index: u32::MAX,
             recipient,
             amount,
         }
@@ -365,53 +480,9 @@ impl CoreEscrow {
         Ok(())
     }
 
-    pub fn contribute_insurance(env: Env, amount: i128, asset: Address) -> Result<(), Error> {
-        let mut fund = env
-            .storage()
-            .instance()
-            .get(&DataKey::InsuranceFund)
-            .unwrap_or(InsuranceFund {
-                balance: 0,
-                total_contributions: 0,
-                total_paid_out: 0,
-            });
-
-        fund.balance += amount;
-        fund.total_contributions += amount;
-
-        env.storage().instance().set(&DataKey::InsuranceFund, &fund);
-
-        InsuranceContributed { asset, amount }.publish(&env);
-        Ok(())
-    }
-
-    pub fn claim_insurance(
-        env: Env,
-        claimant: Address,
-        amount: i128,
-        asset: Address,
-    ) -> Result<(), Error> {
-        let admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
-        admin.require_auth();
-
-        token::Client::new(&env, &asset).transfer(
-            &env.current_contract_address(),
-            &claimant,
-            &amount,
-        );
-
-        InsuranceClaimed {
-            asset,
-            claimant,
-            amount,
-        }
-        .publish(&env);
-        Ok(())
-    }
+    // ========================================================================
+    // REFUND FUNCTIONS
+    // ========================================================================
 
     pub fn refund_all(env: Env, pool_id: BytesN<32>) -> Result<(), Error> {
         let pool_key = DataKey::EscrowPool(pool_id.clone());
@@ -420,22 +491,22 @@ impl CoreEscrow {
             .persistent()
             .get(&pool_key)
             .ok_or(Error::PoolNotFound)?;
-
         pool.authorized_caller.require_auth();
-
         let remaining = pool.total_deposited - pool.total_released - pool.total_refunded;
         if remaining > 0 {
+            pool.total_refunded = pool
+                .total_refunded
+                .checked_add(remaining)
+                .ok_or(Error::Overflow)?;
+            env.storage().persistent().set(&pool_key, &pool);
             token::Client::new(&env, &pool.asset).transfer(
                 &env.current_contract_address(),
                 &pool.owner,
                 &remaining,
             );
-            pool.total_refunded += remaining;
-            env.storage().persistent().set(&pool_key, &pool);
-
             Refunded {
                 pool_id,
-                recipient: pool.owner.clone(),
+                recipient: pool.owner,
                 amount: remaining,
             }
             .publish(&env);
@@ -447,15 +518,294 @@ impl CoreEscrow {
         Self::refund_all(env, pool_id)
     }
 
-    // ========================================
-    // INTERNAL HELPER FUNCTIONS
-    // ========================================
+    pub fn refund_backers(
+        env: Env,
+        pool_id: BytesN<32>,
+        backers: Vec<(Address, i128)>,
+    ) -> Result<(), Error> {
+        let pool_key = DataKey::EscrowPool(pool_id.clone());
+        let mut pool: EscrowPool = env
+            .storage()
+            .persistent()
+            .get(&pool_key)
+            .ok_or(Error::PoolNotFound)?;
+        pool.authorized_caller.require_auth();
+        let token_client = token::Client::new(&env, &pool.asset);
+        let contract_addr = env.current_contract_address();
+        for (backer, amount) in backers.iter() {
+            if amount > 0 {
+                pool.total_refunded = pool
+                    .total_refunded
+                    .checked_add(amount)
+                    .ok_or(Error::Overflow)?;
+                token_client.transfer(&contract_addr, &backer, &amount);
+                Refunded {
+                    pool_id: pool_id.clone(),
+                    recipient: backer,
+                    amount,
+                }
+                .publish(&env);
+            }
+        }
+        env.storage().persistent().set(&pool_key, &pool);
+        Ok(())
+    }
 
-    fn is_zero_address(_env: &Env, _address: &Address) -> bool {
-        // In Soroban, there isn't a native "zero address" like EVM.
-        // We can check if it's a specific placeholder if needed,
-        // but often 'require_auth' is sufficient for security.
-        // This is a placeholder implementation as requested.
-        false
+    // ========================================================================
+    // INSURANCE FUND
+    // ========================================================================
+
+    pub fn contribute_insurance(env: Env, amount: i128) -> Result<(), Error> {
+        if amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+        let mut fund = env
+            .storage()
+            .instance()
+            .get(&DataKey::InsuranceFund)
+            .unwrap_or(InsuranceFund {
+                balance: 0,
+                total_contributions: 0,
+                total_paid_out: 0,
+            });
+        fund.balance = fund.balance.checked_add(amount).ok_or(Error::Overflow)?;
+        fund.total_contributions = fund
+            .total_contributions
+            .checked_add(amount)
+            .ok_or(Error::Overflow)?;
+        env.storage().instance().set(&DataKey::InsuranceFund, &fund);
+        InsuranceContributed { amount }.publish(&env);
+        Ok(())
+    }
+
+    pub fn claim_insurance(
+        env: Env,
+        claimant: Address,
+        amount: i128,
+        asset: Address,
+    ) -> Result<(), Error> {
+        let admin = Self::require_admin(&env)?;
+        admin.require_auth();
+        let mut fund: InsuranceFund = env
+            .storage()
+            .instance()
+            .get(&DataKey::InsuranceFund)
+            .ok_or(Error::NotInitialized)?;
+        if amount > fund.balance {
+            return Err(Error::InsuranceInsufficient);
+        }
+        fund.balance -= amount;
+        fund.total_paid_out = fund
+            .total_paid_out
+            .checked_add(amount)
+            .ok_or(Error::Overflow)?;
+        env.storage().instance().set(&DataKey::InsuranceFund, &fund);
+        token::Client::new(&env, &asset).transfer(
+            &env.current_contract_address(),
+            &claimant,
+            &amount,
+        );
+        InsuranceClaimed {
+            claimant,
+            amount,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    // ========================================================================
+    // FEE ROUTING (merged from PaymentRouter)
+    // ========================================================================
+
+    pub fn route_deposit(
+        env: Env,
+        payer: Address,
+        pool_id: BytesN<32>,
+        gross_amount: i128,
+        asset: Address,
+        sub_type: SubType,
+    ) -> Result<i128, Error> {
+        payer.require_auth();
+        Self::require_not_paused(&env)?;
+        if gross_amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+        let config: FeeConfig = env
+            .storage()
+            .instance()
+            .get(&DataKey::FeeConfig)
+            .ok_or(Error::NotInitialized)?;
+        let treasury: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Treasury)
+            .ok_or(Error::NotInitialized)?;
+        let fee_bps = config.get_fee_bps(&sub_type);
+        let fee = math::calculate_fee_bps(gross_amount, fee_bps);
+        let (treasury_cut, insurance_cut) = math::split_fee(fee, config.insurance_cut_bps);
+        let net = gross_amount - fee;
+        let token_client = token::Client::new(&env, &asset);
+        let contract_addr = env.current_contract_address();
+        if net > 0 {
+            token_client.transfer(&payer, &contract_addr, &net);
+        }
+        if treasury_cut > 0 {
+            token_client.transfer(&payer, &treasury, &treasury_cut);
+        }
+        if insurance_cut > 0 {
+            token_client.transfer(&payer, &contract_addr, &insurance_cut);
+            Self::_add_insurance(&env, insurance_cut)?;
+        }
+        let pool_key = DataKey::EscrowPool(pool_id.clone());
+        let mut pool: EscrowPool = env
+            .storage()
+            .persistent()
+            .get(&pool_key)
+            .ok_or(Error::PoolNotFound)?;
+        pool.total_deposited = pool
+            .total_deposited
+            .checked_add(net)
+            .ok_or(Error::Overflow)?;
+        env.storage().persistent().set(&pool_key, &pool);
+        let fee_record = FeeRecord {
+            pool_id: pool_id.clone(),
+            sub_type: sub_type.clone(),
+            gross_amount,
+            fee_amount: fee,
+            treasury_cut,
+            insurance_cut,
+            net_to_escrow: net,
+            timestamp: env.ledger().timestamp(),
+            payer: payer.clone(),
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::FeeRecord(pool_id.clone()), &fee_record);
+        FeeCharged {
+            pool_id,
+            sub_type,
+            gross: gross_amount,
+            fee,
+            treasury_cut,
+            insurance_cut,
+            net,
+        }
+        .publish(&env);
+        Ok(net)
+    }
+
+    pub fn route_pledge(
+        env: Env,
+        backer: Address,
+        pool_id: BytesN<32>,
+        pledge_amount: i128,
+        asset: Address,
+    ) -> Result<i128, Error> {
+        backer.require_auth();
+        Self::require_not_paused(&env)?;
+        if pledge_amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+        let config: FeeConfig = env
+            .storage()
+            .instance()
+            .get(&DataKey::FeeConfig)
+            .ok_or(Error::NotInitialized)?;
+        let treasury: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Treasury)
+            .ok_or(Error::NotInitialized)?;
+        let fee = math::calculate_fee_bps(pledge_amount, config.crowdfund_fee_bps);
+        let (treasury_cut, insurance_cut) = math::split_fee(fee, config.insurance_cut_bps);
+        let token_client = token::Client::new(&env, &asset);
+        let contract_addr = env.current_contract_address();
+        token_client.transfer(&backer, &contract_addr, &pledge_amount);
+        if treasury_cut > 0 {
+            token_client.transfer(&backer, &treasury, &treasury_cut);
+        }
+        if insurance_cut > 0 {
+            token_client.transfer(&backer, &contract_addr, &insurance_cut);
+            Self::_add_insurance(&env, insurance_cut)?;
+        }
+        let pool_key = DataKey::EscrowPool(pool_id.clone());
+        let mut pool: EscrowPool = env
+            .storage()
+            .persistent()
+            .get(&pool_key)
+            .ok_or(Error::PoolNotFound)?;
+        pool.total_deposited = pool
+            .total_deposited
+            .checked_add(pledge_amount)
+            .ok_or(Error::Overflow)?;
+        env.storage().persistent().set(&pool_key, &pool);
+        FeeCharged {
+            pool_id: pool_id.clone(),
+            sub_type: SubType::CrowdfundPledge,
+            gross: pledge_amount + fee,
+            fee,
+            treasury_cut,
+            insurance_cut,
+            net: pledge_amount,
+        }
+        .publish(&env);
+        Ok(pledge_amount)
+    }
+
+    // ========================================================================
+    // INTERNAL HELPERS
+    // ========================================================================
+
+    fn require_admin(env: &Env) -> Result<Address, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)
+    }
+
+    fn require_not_paused(env: &Env) -> Result<(), Error> {
+        let paused: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::RoutingPaused)
+            .unwrap_or(false);
+        if paused {
+            return Err(Error::RoutingPaused);
+        }
+        Ok(())
+    }
+
+    fn _add_insurance(env: &Env, amount: i128) -> Result<(), Error> {
+        let mut fund = env
+            .storage()
+            .instance()
+            .get(&DataKey::InsuranceFund)
+            .unwrap_or(InsuranceFund {
+                balance: 0,
+                total_contributions: 0,
+                total_paid_out: 0,
+            });
+        fund.balance = fund.balance.checked_add(amount).ok_or(Error::Overflow)?;
+        fund.total_contributions = fund
+            .total_contributions
+            .checked_add(amount)
+            .ok_or(Error::Overflow)?;
+        env.storage().instance().set(&DataKey::InsuranceFund, &fund);
+        Ok(())
+    }
+
+    fn compute_pool_id(env: &Env, module: &ModuleType, module_id: u64) -> BytesN<32> {
+        let module_byte: u8 = match module {
+            ModuleType::Bounty => 0x01,
+            ModuleType::Crowdfund => 0x02,
+            ModuleType::Grant => 0x03,
+            ModuleType::Hackathon => 0x04,
+        };
+        let mut data = Bytes::new(env);
+        data.push_back(module_byte);
+        for b in module_id.to_be_bytes() {
+            data.push_back(b);
+        }
+        env.crypto().sha256(&data).into()
     }
 }

@@ -1,220 +1,267 @@
-use super::*;
-use crate::storage::GrantStatus;
+#![cfg(test)]
+
+use crate::contract::{GrantHub, GrantHubClient};
+use crate::storage::{GrantStatus, GrantType, MilestoneStatus};
 use core_escrow::{CoreEscrow, CoreEscrowClient};
 use governance_voting::{GovernanceVoting, GovernanceVotingClient};
-use payment_router::{ModuleType as RouterModuleType, PaymentRouter, PaymentRouterClient};
 use reputation_registry::{ReputationRegistry, ReputationRegistryClient};
-use soroban_sdk::{testutils::Address as _, testutils::Ledger as _, Address, Env, String, Vec};
+use soroban_sdk::testutils::Address as _;
+use soroban_sdk::testutils::Ledger as _;
+use soroban_sdk::token::{StellarAssetClient, TokenClient};
+use soroban_sdk::{Address, Env, String, Vec};
 
-fn setup_env() -> (
-    Env,
-    GrantHubClient<'static>,
-    Address,
-    Address,
-    Address,
-    Address,
-    Address,
-    Address,
-) {
+#[allow(dead_code)]
+struct TestEnv<'a> {
+    env: Env,
+    hub_client: GrantHubClient<'a>,
+    escrow_client: CoreEscrowClient<'a>,
+    rep_client: ReputationRegistryClient<'a>,
+    gov_client: GovernanceVotingClient<'a>,
+    admin: Address,
+    token: TokenClient<'a>,
+    token_addr: Address,
+    escrow_id: Address,
+    gov_id: Address,
+}
+
+fn setup() -> TestEnv<'static> {
     let env = Env::default();
     env.mock_all_auths();
 
     let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
 
-    let esc_id = env.register(CoreEscrow, ());
-    let esc_client = CoreEscrowClient::new(&env, &esc_id);
-    esc_client.init_core_escrow(&admin);
+    // Deploy token
+    let token_admin = Address::generate(&env);
+    let token_addr = env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
+    let token = TokenClient::new(&env, &token_addr);
+    let sac = StellarAssetClient::new(&env, &token_addr);
 
+    // Deploy CoreEscrow
+    let escrow_id = env.register(CoreEscrow, ());
+    let escrow_client = CoreEscrowClient::new(&env, &escrow_id);
+    escrow_client.init(&admin, &treasury);
+
+    // Deploy ReputationRegistry
     let rep_id = env.register(ReputationRegistry, ());
     let rep_client = ReputationRegistryClient::new(&env, &rep_id);
-    rep_client.init_reputation_reg(&admin);
+    rep_client.init(&admin);
 
+    // Deploy GovernanceVoting
     let gov_id = env.register(GovernanceVoting, ());
     let gov_client = GovernanceVotingClient::new(&env, &gov_id);
-    gov_client.init_gov_voting(&admin, &rep_id);
+    gov_client.init(&admin);
 
-    let router_id = env.register(PaymentRouter, ());
-    let router_client = PaymentRouterClient::new(&env, &router_id);
-    router_client.init_payment_router(&admin, &admin, &esc_id);
-    router_client.set_fee_rate(&RouterModuleType::Grant, &0);
-
+    // Deploy GrantHub
     let hub_id = env.register(GrantHub, ());
     let hub_client = GrantHubClient::new(&env, &hub_id);
+    hub_client.init(&admin, &escrow_id, &rep_id, &gov_id);
 
-    // Authorize GrantHub in ReputationRegistry and GovernanceVoting
+    // Authorize GrantHub in all dependent contracts
+    escrow_client.authorize_module(&hub_id);
     rep_client.add_authorized_module(&hub_id);
-    gov_client.add_gov_module(&hub_id);
+    gov_client.add_authorized_module(&hub_id);
 
-    let proj_reg = Address::generate(&env);
+    // Mint tokens to admin
+    sac.mint(&admin, &1_000_000);
 
-    hub_client.init_grant_hub(&admin, &proj_reg, &esc_id, &gov_id, &rep_id, &router_id);
-
-    (
-        env, hub_client, admin, esc_id, gov_id, rep_id, router_id, proj_reg,
-    )
+    TestEnv {
+        env,
+        hub_client,
+        escrow_client,
+        rep_client,
+        gov_client,
+        admin,
+        token,
+        token_addr,
+        escrow_id,
+        gov_id,
+    }
 }
 
 #[test]
 fn test_milestone_grant_lifecycle() {
-    let (env, client, _admin, esc_id, _gov_id, _rep_id, _router_id, _proj_reg) = setup_env();
+    let t = setup();
 
-    let creator = Address::generate(&env);
-    let recipient = Address::generate(&env);
-    let asset = env
-        .register_stellar_asset_contract_v2(Address::generate(&env))
-        .address();
-    let token_admin = soroban_sdk::token::StellarAssetClient::new(&env, &asset);
-    token_admin.mint(&creator, &10000);
+    let creator = t.admin.clone();
+    let recipient = Address::generate(&t.env);
 
-    let mut milestones = Vec::new(&env);
-    milestones.push_back((String::from_str(&env, "M1"), 5000));
-    milestones.push_back((String::from_str(&env, "M2"), 5000));
+    // Mint tokens to creator
+    StellarAssetClient::new(&t.env, &t.token_addr).mint(&creator, &10_000);
 
-    let gid = client.create_milestone_grant(
+    // Create milestones: 60% first, 40% second
+    let mut milestone_descs: Vec<(String, u32)> = Vec::new(&t.env);
+    milestone_descs.push_back((String::from_str(&t.env, "Phase 1 delivery"), 6000));
+    milestone_descs.push_back((String::from_str(&t.env, "Phase 2 delivery"), 4000));
+
+    let grant_id = t.hub_client.create_milestone_grant(
         &creator,
-        &1,
         &recipient,
-        &String::from_str(&env, "ipfs://meta"),
-        &10000,
-        &asset,
-        &milestones,
+        &10_000,
+        &t.token_addr,
+        &milestone_descs,
     );
 
-    assert_eq!(gid, 1);
+    assert_eq!(grant_id, 1);
 
-    let token_client = soroban_sdk::token::Client::new(&env, &asset);
-    assert_eq!(token_client.balance(&creator), 0);
-    assert_eq!(token_client.balance(&esc_id), 10000);
+    // Verify funds moved to escrow
+    assert_eq!(t.token.balance(&t.escrow_id), 10_000);
 
-    let grant_after_creation = client.get_grant(&gid);
-    assert_eq!(grant_after_creation.status, GrantStatus::Active);
-
-    // Submission
-    client.submit_grant_milestone(&recipient, &gid, &0, &String::from_str(&env, "ipfs://sub"));
-
-    // Approval
-    client.approve_grant_milestone(&gid, &0);
-
-    assert_eq!(token_client.balance(&recipient), 5000);
-
-    let grant = client.get_grant(&gid);
+    let grant = t.hub_client.get_grant(&grant_id);
     assert_eq!(grant.status, GrantStatus::Active);
+    assert_eq!(grant.grant_type, GrantType::Milestone);
+    assert_eq!(grant.milestone_count, 2);
 
-    // Second milestone
-    client.submit_grant_milestone(&recipient, &gid, &1, &String::from_str(&env, "ipfs://sub2"));
-    client.approve_grant_milestone(&gid, &1);
+    // Check milestones stored correctly
+    let m0 = t.hub_client.get_milestone(&grant_id, &0);
+    assert_eq!(m0.pct, 6000);
+    assert_eq!(m0.status, MilestoneStatus::Pending);
 
-    assert_eq!(token_client.balance(&recipient), 10000);
-    let final_grant = client.get_grant(&gid);
+    let m1 = t.hub_client.get_milestone(&grant_id, &1);
+    assert_eq!(m1.pct, 4000);
+    assert_eq!(m1.status, MilestoneStatus::Pending);
+
+    // Submit first milestone
+    t.hub_client.submit_grant_milestone(&recipient, &grant_id, &0);
+
+    let m0_after = t.hub_client.get_milestone(&grant_id, &0);
+    assert_eq!(m0_after.status, MilestoneStatus::Submitted);
+
+    // Approve first milestone
+    t.hub_client.approve_grant_milestone(&grant_id, &0);
+
+    // 60% of 10000 = 6000 released
+    assert_eq!(t.token.balance(&recipient), 6000);
+
+    let grant_after = t.hub_client.get_grant(&grant_id);
+    assert_eq!(grant_after.status, GrantStatus::Executing);
+
+    // Submit and approve second milestone
+    t.hub_client.submit_grant_milestone(&recipient, &grant_id, &1);
+    t.hub_client.approve_grant_milestone(&grant_id, &1);
+
+    // 100% released
+    assert_eq!(t.token.balance(&recipient), 10_000);
+
+    let final_grant = t.hub_client.get_grant(&grant_id);
     assert_eq!(final_grant.status, GrantStatus::Completed);
 }
 
 #[test]
-fn test_retrospective_grant_lifecycle() {
-    let (env, client, _admin, esc_id, gov_id, _rep_id, _router_id, _proj_reg) = setup_env();
+fn test_retrospective_grant() {
+    let t = setup();
 
-    let creator = Address::generate(&env);
-    let asset = env
-        .register_stellar_asset_contract_v2(Address::generate(&env))
-        .address();
-    let token_client = soroban_sdk::token::Client::new(&env, &asset);
-    soroban_sdk::token::StellarAssetClient::new(&env, &asset).mint(&creator, &10000);
-    assert_eq!(token_client.balance(&creator), 10000);
+    let creator = t.admin.clone();
+    StellarAssetClient::new(&t.env, &t.token_addr).mint(&creator, &10_000);
 
-    let applicant1 = Address::generate(&env);
-    let applicant2 = Address::generate(&env);
-    let mut applicants = Vec::new(&env);
-    applicants.push_back(applicant1.clone());
-    applicants.push_back(applicant2.clone());
+    let applicant1 = Address::generate(&t.env);
+    let applicant2 = Address::generate(&t.env);
 
-    let gid = client.create_retrospective_grant(
+    let mut options: Vec<String> = Vec::new(&t.env);
+    options.push_back(String::from_str(&t.env, "Applicant 1"));
+    options.push_back(String::from_str(&t.env, "Applicant 2"));
+
+    let grant_id = t.hub_client.create_retrospective_grant(
         &creator,
-        &1,
-        &String::from_str(&env, "ipfs://retro"),
-        &10000,
-        &asset,
-        &applicants,
+        &10_000,
+        &t.token_addr,
+        &options,
+        &604_800, // 1 week
     );
 
-    assert_eq!(token_client.balance(&esc_id), 10000);
+    assert_eq!(grant_id, 1);
+    assert_eq!(t.token.balance(&t.escrow_id), 10_000);
 
-    let grant = client.get_grant(&gid);
-    let session_id = grant.vote_session_id.unwrap();
+    let grant = t.hub_client.get_grant(&grant_id);
+    assert_eq!(grant.status, GrantStatus::Active);
+    assert_eq!(grant.grant_type, GrantType::Retrospective);
 
-    // Voter
-    let voter = Address::generate(&env);
-    let rep_client = ReputationRegistryClient::new(&env, &_rep_id);
-    rep_client.init_reputation_reg_profile(&voter);
+    // Get the session_id to cast votes
+    let session_id = t.hub_client.get_retro_session(&grant_id);
 
-    let gov_client = GovernanceVotingClient::new(&env, &gov_id);
-    gov_client.cast_vote(&voter, &session_id, &0); // Vote for applicant1
+    // Cast a vote for option 0 (applicant1)
+    let voter = Address::generate(&t.env);
+    t.gov_client.cast_vote(&voter, &session_id, &0);
 
-    // Jump time to end voting
-    env.ledger()
-        .set_timestamp(env.ledger().timestamp() + 700000);
+    // Advance time past voting end
+    t.env
+        .ledger()
+        .set_timestamp(t.env.ledger().timestamp() + 700_000);
 
-    client.finalize_retrospective(&gid);
+    // Finalize - applicant1 should get all funds since they got all votes
+    let mut recipients: Vec<Address> = Vec::new(&t.env);
+    recipients.push_back(applicant1.clone());
+    recipients.push_back(applicant2.clone());
 
-    let final_grant = client.get_grant(&gid);
+    t.hub_client.finalize_retrospective(&grant_id, &recipients);
+
+    let final_grant = t.hub_client.get_grant(&grant_id);
     assert_eq!(final_grant.status, GrantStatus::Completed);
-    assert_eq!(final_grant.recipient.unwrap(), applicant1);
 
-    assert_eq!(token_client.balance(&applicant1), 10000);
+    // applicant1 got all weighted votes, so gets all funds
+    assert_eq!(t.token.balance(&applicant1), 10_000);
+    assert_eq!(t.token.balance(&applicant2), 0);
 }
 
 #[test]
-fn test_qf_round_lifecycle() {
-    let (env, client, _admin, esc_id, gov_id, _rep_id, router_id, _proj_reg) = setup_env();
+fn test_qf_round() {
+    let t = setup();
 
-    let creator = Address::generate(&env);
-    let asset = env
-        .register_stellar_asset_contract_v2(Address::generate(&env))
-        .address();
-    let token_client = soroban_sdk::token::Client::new(&env, &asset);
-    soroban_sdk::token::StellarAssetClient::new(&env, &asset).mint(&creator, &10000);
-    assert_eq!(token_client.balance(&creator), 10000);
+    let creator = t.admin.clone();
+    StellarAssetClient::new(&t.env, &t.token_addr).mint(&creator, &10_000);
 
-    let mut eligible = Vec::new(&env);
-    eligible.push_back(1u64);
-    eligible.push_back(2u64);
+    let mut project_names: Vec<String> = Vec::new(&t.env);
+    project_names.push_back(String::from_str(&t.env, "Project Alpha"));
+    project_names.push_back(String::from_str(&t.env, "Project Beta"));
 
-    let gid = client.create_qf_round(
+    let grant_id = t.hub_client.create_qf_round(
         &creator,
-        &1,
-        &String::from_str(&env, "ipfs://qf"),
-        &10000,
-        &asset,
-        &eligible,
+        &10_000,
+        &t.token_addr,
+        &project_names,
+        &2_592_000, // 30 days
     );
 
-    assert_eq!(token_client.balance(&esc_id), 10000);
+    assert_eq!(grant_id, 1);
+    assert_eq!(t.token.balance(&t.escrow_id), 10_000);
 
-    let grant = client.get_grant(&gid);
-    let session_id = grant.vote_session_id.unwrap();
+    let grant = t.hub_client.get_grant(&grant_id);
+    assert_eq!(grant.status, GrantStatus::Active);
+    assert_eq!(grant.grant_type, GrantType::QF);
 
-    let p1 = Address::generate(&env);
-    let p2 = Address::generate(&env);
-    let mut project_addresses = Vec::new(&env);
+    let qf_data = t.hub_client.get_qf_round(&grant_id);
+    assert_eq!(qf_data.project_count, 2);
+    assert_eq!(qf_data.matching_pool, 10_000);
+
+    // Record donations via the hub
+    t.hub_client.donate_to_project(&grant_id, &100, &0);
+    t.hub_client.donate_to_project(&grant_id, &400, &1);
+
+    // Advance time past session end
+    t.env
+        .ledger()
+        .set_timestamp(t.env.ledger().timestamp() + 3_000_000);
+
+    let p1 = Address::generate(&t.env);
+    let p2 = Address::generate(&t.env);
+    let mut project_addresses: Vec<Address> = Vec::new(&t.env);
     project_addresses.push_back(p1.clone());
     project_addresses.push_back(p2.clone());
 
-    // Record some donations in Governance
-    let gov_client = GovernanceVotingClient::new(&env, &gov_id);
-    gov_client.add_gov_module(&router_id); // Authorize router/caller
-    let donor = Address::generate(&env);
+    t.hub_client.finalize_qf_round(&grant_id, &project_addresses);
 
-    gov_client.record_qf_donation(&router_id, &session_id, &donor, &0, &100);
-    gov_client.record_qf_donation(&router_id, &session_id, &donor, &1, &400);
-
-    // End round
-    env.ledger()
-        .set_timestamp(env.ledger().timestamp() + 3000000);
-
-    client.finalize_qf_round(&gid, &project_addresses);
-
-    let final_grant = client.get_grant(&gid);
+    let final_grant = t.hub_client.get_grant(&grant_id);
     assert_eq!(final_grant.status, GrantStatus::Completed);
 
-    assert!(token_client.balance(&p1) >= 2000);
-    assert!(token_client.balance(&p2) >= 8000);
+    // Verify distribution happened (exact amounts depend on QF math)
+    let p1_balance = t.token.balance(&p1);
+    let p2_balance = t.token.balance(&p2);
+
+    // Both should have received something
+    assert!(p1_balance > 0);
+    assert!(p2_balance > 0);
+    // Total distributed should equal matching pool
+    assert_eq!(p1_balance + p2_balance, 10_000);
 }

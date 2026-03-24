@@ -1,59 +1,120 @@
 use crate::error::Error;
-use crate::events::{CampaignCreated, CampaignFunded, MilestoneFinalized, PledgeRecorded};
+use crate::events::{
+    CampaignCancelled, CampaignCreated, CampaignFailed, CampaignFunded, MilestoneApproved,
+    MilestoneSubmitted, PledgeRecorded, RefundBatchProcessed,
+};
 use crate::storage::{Campaign, CampaignStatus, DataKey, Milestone, MilestoneStatus};
-use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, IntoVal, String, Symbol, Vec};
+use boundless_types::ModuleType;
+use core_escrow::CoreEscrowClient;
+use reputation_registry::ReputationRegistryClient;
+use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, String, Vec};
 
-use core_escrow::ModuleType;
+const BACKER_BATCH_SIZE: u32 = 50;
 
 #[contract]
 pub struct CrowdfundRegistry;
 
 #[contractimpl]
 impl CrowdfundRegistry {
-    pub fn init_crowdfund_reg(
+    // ========================================================================
+    // INITIALIZATION
+    // ========================================================================
+
+    pub fn init(
         env: Env,
         admin: Address,
-        project_registry: Address,
         core_escrow: Address,
-        voting_contract: Address,
         reputation_registry: Address,
-        payment_router: Address,
     ) -> Result<(), Error> {
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(Error::AlreadyInitialized);
         }
+        admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage()
-            .instance()
-            .set(&DataKey::ProjectRegistry, &project_registry);
         env.storage()
             .instance()
             .set(&DataKey::CoreEscrow, &core_escrow);
         env.storage()
             .instance()
-            .set(&DataKey::VotingContract, &voting_contract);
-        env.storage()
-            .instance()
             .set(&DataKey::ReputationRegistry, &reputation_registry);
-        env.storage()
-            .instance()
-            .set(&DataKey::PaymentRouter, &payment_router);
         env.storage().instance().set(&DataKey::CampaignCount, &0u64);
         Ok(())
     }
 
+    // ========================================================================
+    // QUERIES
+    // ========================================================================
+
+    pub fn get_campaign(env: Env, campaign_id: u64) -> Result<Campaign, Error> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Campaign(campaign_id))
+            .ok_or(Error::CampaignNotFound)
+    }
+
+    pub fn get_milestone(
+        env: Env,
+        campaign_id: u64,
+        milestone_index: u32,
+    ) -> Result<Milestone, Error> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::CampaignMilestone(campaign_id, milestone_index))
+            .ok_or(Error::MilestoneNotFound)
+    }
+
+    pub fn get_pledge(env: Env, campaign_id: u64, backer: Address) -> i128 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Pledge(campaign_id, backer))
+            .unwrap_or(0)
+    }
+
+    pub fn get_campaign_count(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::CampaignCount)
+            .unwrap_or(0)
+    }
+
+    // ========================================================================
+    // CAMPAIGN CREATION
+    // ========================================================================
+
+    /// Create a campaign with decomposed milestones.
+    /// milestone_descs: Vec of (description, pct_bps) where pct_bps sums to 10000.
     pub fn create_campaign(
         env: Env,
         owner: Address,
-        project_id: u64,
         metadata_cid: String,
         funding_goal: i128,
         asset: Address,
         deadline: u64,
-        milestones: Vec<Milestone>,
+        milestone_descs: Vec<(String, u32)>,
         min_pledge: i128,
     ) -> Result<u64, Error> {
         owner.require_auth();
+
+        if funding_goal <= 0 {
+            return Err(Error::AmountNotPositive);
+        }
+        if deadline <= env.ledger().timestamp() {
+            return Err(Error::DeadlinePassed);
+        }
+
+        // Validate milestones: count 2-10, sum of pcts = 10000
+        let ms_count = milestone_descs.len();
+        if ms_count < 2 || ms_count > 10 {
+            return Err(Error::InvalidMilestones);
+        }
+        let mut pct_sum: u32 = 0;
+        for i in 0..ms_count {
+            let (_, pct) = milestone_descs.get(i).unwrap();
+            pct_sum += pct;
+        }
+        if pct_sum != 10000 {
+            return Err(Error::InvalidMilestones);
+        }
 
         let mut count: u64 = env
             .storage()
@@ -61,35 +122,37 @@ impl CrowdfundRegistry {
             .get(&DataKey::CampaignCount)
             .unwrap_or(0);
         count += 1;
-        env.storage()
-            .instance()
-            .set(&DataKey::CampaignCount, &count);
+        env.storage().instance().set(&DataKey::CampaignCount, &count);
 
-        let esc_addr: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::CoreEscrow)
-            .ok_or(Error::NotInitialized)?;
-
-        let pool_id: BytesN<32> = env.invoke_contract(
-            &esc_addr,
-            &Symbol::new(&env, "create_pool"),
-            (
-                owner.clone(),
-                ModuleType::Crowdfund,
-                count,
-                0i128, // Initial deposit is 0
-                asset.clone(),
-                deadline,
-                env.current_contract_address(),
-            )
-                .into_val(&env),
+        // Create escrow pool (0 initial deposit — backers will pledge into it)
+        let escrow_client = Self::escrow_client(&env);
+        let pool_id = escrow_client.create_pool(
+            &owner,
+            &ModuleType::Crowdfund,
+            &count,
+            &0i128,
+            &asset,
+            &deadline,
+            &env.current_contract_address(),
         );
+
+        // Store milestones decomposed
+        for i in 0..ms_count {
+            let (desc, pct) = milestone_descs.get(i).unwrap();
+            let milestone = Milestone {
+                id: i,
+                description: desc,
+                pct,
+                status: MilestoneStatus::Pending,
+            };
+            env.storage()
+                .persistent()
+                .set(&DataKey::CampaignMilestone(count, i), &milestone);
+        }
 
         let campaign = Campaign {
             id: count,
             owner: owner.clone(),
-            project_id,
             metadata_cid,
             status: CampaignStatus::Campaigning,
             funding_goal,
@@ -97,29 +160,38 @@ impl CrowdfundRegistry {
             asset,
             pool_id,
             deadline,
-            milestones,
+            milestone_count: ms_count,
             min_pledge,
+            backer_count: 0,
+            refund_progress: 0,
         };
 
         env.storage()
             .persistent()
             .set(&DataKey::Campaign(count), &campaign);
+
         CampaignCreated {
             id: count,
             owner,
             funding_goal,
         }
         .publish(&env);
+
         Ok(count)
     }
 
-    pub fn pledge(env: Env, donor: Address, campaign_id: u64, amount: i128) -> Result<(), Error> {
-        donor.require_auth();
+    // ========================================================================
+    // PLEDGING
+    // ========================================================================
 
+    pub fn pledge(env: Env, backer: Address, campaign_id: u64, amount: i128) -> Result<(), Error> {
+        backer.require_auth();
+
+        let key = DataKey::Campaign(campaign_id);
         let mut campaign: Campaign = env
             .storage()
             .persistent()
-            .get(&DataKey::Campaign(campaign_id))
+            .get(&key)
             .ok_or(Error::CampaignNotFound)?;
 
         if env.ledger().timestamp() > campaign.deadline {
@@ -132,394 +204,367 @@ impl CrowdfundRegistry {
             return Err(Error::BelowMinPledge);
         }
 
-        let router_addr: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::PaymentRouter)
-            .ok_or(Error::NotInitialized)?;
-
-        let net_amount: i128 = env.invoke_contract(
-            &router_addr,
-            &Symbol::new(&env, "route_deposit"),
-            (
-                donor.clone(),
-                amount,
-                campaign.asset.clone(),
-                ModuleType::Crowdfund,
-            )
-                .into_val(&env),
+        // Use route_pledge for fee-on-top model
+        let escrow_client = Self::escrow_client(&env);
+        let net = escrow_client.route_pledge(
+            &backer,
+            &campaign.pool_id,
+            &amount,
+            &campaign.asset,
         );
 
-        let esc_addr: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::CoreEscrow)
-            .ok_or(Error::NotInitialized)?;
-        env.invoke_contract::<()>(
-            &esc_addr,
-            &Symbol::new(&env, "deposit"),
-            (
-                campaign.pool_id.clone(),
-                net_amount,
-                campaign.asset.clone(),
-                donor.clone(),
-            )
-                .into_val(&env),
-        );
+        campaign.current_funding += net;
 
-        campaign.current_funding += net_amount;
-
-        let mut pledge_amount: i128 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Pledge(campaign_id, donor.clone()))
-            .unwrap_or(0);
-        pledge_amount += net_amount;
+        // Track backer pledge amount
+        let pledge_key = DataKey::Pledge(campaign_id, backer.clone());
+        let existing: i128 = env.storage().persistent().get(&pledge_key).unwrap_or(0);
         env.storage()
             .persistent()
-            .set(&DataKey::Pledge(campaign_id, donor.clone()), &pledge_amount);
+            .set(&pledge_key, &(existing + net));
 
-        let mut donors: Vec<Address> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Donors(campaign_id))
-            .unwrap_or(Vec::new(&env));
-        if !donors.contains(&donor) {
-            donors.push_back(donor.clone());
-            env.storage()
+        // Add backer to batch list (if new)
+        if existing == 0 {
+            let batch_idx = campaign.backer_count / BACKER_BATCH_SIZE;
+            let batch_key = DataKey::BackerBatch(campaign_id, batch_idx);
+            let mut batch: Vec<Address> = env
+                .storage()
                 .persistent()
-                .set(&DataKey::Donors(campaign_id), &donors);
+                .get(&batch_key)
+                .unwrap_or(Vec::new(&env));
+            batch.push_back(backer.clone());
+            env.storage().persistent().set(&batch_key, &batch);
+            campaign.backer_count += 1;
         }
 
+        // Check if funded
         if campaign.current_funding >= campaign.funding_goal {
+            escrow_client.lock_pool(&campaign.pool_id);
+
+            // Define release slots based on milestones
+            let mut slots = Vec::new(&env);
+            for i in 0..campaign.milestone_count {
+                let ms: Milestone = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::CampaignMilestone(campaign_id, i))
+                    .unwrap();
+                let ms_amount =
+                    (campaign.current_funding * ms.pct as i128) / 10000;
+                slots.push_back((campaign.owner.clone(), ms_amount));
+            }
+            escrow_client.define_release_slots(&campaign.pool_id, &slots);
+
             campaign.status = CampaignStatus::Funded;
-
-            let esc_addr: Address = env
-                .storage()
-                .instance()
-                .get(&DataKey::CoreEscrow)
-                .ok_or(Error::NotInitialized)?;
-            env.invoke_contract::<()>(
-                &esc_addr,
-                &Symbol::new(&env, "lock_pool"),
-                (campaign.pool_id.clone(),).into_val(&env),
-            );
-
             CampaignFunded { id: campaign_id }.publish(&env);
         }
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::Campaign(campaign_id), &campaign);
+        env.storage().persistent().set(&key, &campaign);
+
         PledgeRecorded {
             campaign_id,
-            donor,
-            amount: net_amount,
+            donor: backer,
+            amount: net,
         }
         .publish(&env);
+
         Ok(())
     }
 
-    pub fn submit_milestone(env: Env, campaign_id: u64, milestone_id: u32) -> Result<(), Error> {
+    // ========================================================================
+    // MILESTONE MANAGEMENT
+    // ========================================================================
+
+    pub fn submit_milestone(
+        env: Env,
+        campaign_id: u64,
+        milestone_index: u32,
+    ) -> Result<(), Error> {
+        let key = DataKey::Campaign(campaign_id);
         let mut campaign: Campaign = env
             .storage()
             .persistent()
-            .get(&DataKey::Campaign(campaign_id))
+            .get(&key)
             .ok_or(Error::CampaignNotFound)?;
         campaign.owner.require_auth();
 
-        if campaign.status != CampaignStatus::Funded && campaign.status != CampaignStatus::Executing
+        if campaign.status != CampaignStatus::Funded
+            && campaign.status != CampaignStatus::Executing
         {
             return Err(Error::InvalidState);
         }
 
-        let mut found = false;
-        let mut updated_milestones = Vec::new(&env);
-        for m in campaign.milestones.iter() {
-            let mut m_clone = m.clone();
-            if m.id == milestone_id {
-                if m.status != MilestoneStatus::Pending && m.status != MilestoneStatus::Rejected {
-                    return Err(Error::MilestoneNotPending);
-                }
-                m_clone.status = MilestoneStatus::Submitted;
-                found = true;
-            }
-            updated_milestones.push_back(m_clone);
-        }
-
-        if !found {
-            return Err(Error::MilestoneNotFound);
-        }
-
-        campaign.milestones = updated_milestones;
-        campaign.status = CampaignStatus::Executing;
-        env.storage()
+        let ms_key = DataKey::CampaignMilestone(campaign_id, milestone_index);
+        let mut ms: Milestone = env
+            .storage()
             .persistent()
-            .set(&DataKey::Campaign(campaign_id), &campaign);
+            .get(&ms_key)
+            .ok_or(Error::MilestoneNotFound)?;
+
+        if ms.status != MilestoneStatus::Pending && ms.status != MilestoneStatus::Rejected {
+            return Err(Error::MilestoneNotPending);
+        }
+
+        ms.status = MilestoneStatus::Submitted;
+        env.storage().persistent().set(&ms_key, &ms);
+
+        campaign.status = CampaignStatus::Executing;
+        env.storage().persistent().set(&key, &campaign);
+
+        MilestoneSubmitted {
+            campaign_id,
+            milestone_id: milestone_index,
+        }
+        .publish(&env);
+
         Ok(())
     }
 
-    pub fn approve_milestone(env: Env, campaign_id: u64, milestone_id: u32) -> Result<(), Error> {
-        let admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
+    pub fn approve_milestone(
+        env: Env,
+        campaign_id: u64,
+        milestone_index: u32,
+    ) -> Result<(), Error> {
+        let admin = Self::require_admin(&env)?;
         admin.require_auth();
 
+        let key = DataKey::Campaign(campaign_id);
         let mut campaign: Campaign = env
             .storage()
             .persistent()
-            .get(&DataKey::Campaign(campaign_id))
+            .get(&key)
             .ok_or(Error::CampaignNotFound)?;
 
-        let mut amount_to_release: i128 = 0;
-        let mut updated_milestones = Vec::new(&env);
-        for m in campaign.milestones.iter() {
-            let mut m_clone = m.clone();
-            if m.id == milestone_id {
-                if m.status != MilestoneStatus::Submitted {
-                    return Err(Error::MilestoneNotSubmitted);
-                }
-                m_clone.status = MilestoneStatus::Approved;
-                amount_to_release = m.amount;
-            }
-            updated_milestones.push_back(m_clone);
-        }
-
-        if amount_to_release == 0 {
-            return Err(Error::MilestoneAmountZero);
-        }
-
-        campaign.milestones = updated_milestones;
-
-        // Release from CoreEscrow
-        let esc_addr: Address = env
+        let ms_key = DataKey::CampaignMilestone(campaign_id, milestone_index);
+        let mut ms: Milestone = env
             .storage()
-            .instance()
-            .get(&DataKey::CoreEscrow)
-            .ok_or(Error::NotInitialized)?;
-        env.invoke_contract::<()>(
-            &esc_addr,
-            &Symbol::new(&env, "release_partial"),
-            (
-                campaign.pool_id.clone(),
-                campaign.owner.clone(),
-                amount_to_release,
-            )
-                .into_val(&env),
-        );
+            .persistent()
+            .get(&ms_key)
+            .ok_or(Error::MilestoneNotFound)?;
 
-        // Mark as released
-        let mut finalized_milestones = Vec::new(&env);
-        for m in campaign.milestones.iter() {
-            let mut m_clone = m.clone();
-            if m.id == milestone_id {
-                m_clone.status = MilestoneStatus::Released;
-            }
-            finalized_milestones.push_back(m_clone);
+        if ms.status != MilestoneStatus::Submitted {
+            return Err(Error::MilestoneNotSubmitted);
         }
-        campaign.milestones = finalized_milestones;
 
-        // Check if all finished
+        ms.status = MilestoneStatus::Released;
+        env.storage().persistent().set(&ms_key, &ms);
+
+        // Release the corresponding escrow slot
+        let escrow_client = Self::escrow_client(&env);
+        escrow_client.release_slot(&campaign.pool_id, &milestone_index);
+
+        // Check if all milestones are released
         let mut all_done = true;
-        for m in campaign.milestones.iter() {
+        for i in 0..campaign.milestone_count {
+            let m: Milestone = env
+                .storage()
+                .persistent()
+                .get(&DataKey::CampaignMilestone(campaign_id, i))
+                .unwrap();
             if m.status != MilestoneStatus::Released {
                 all_done = false;
                 break;
             }
         }
+
         if all_done {
             campaign.status = CampaignStatus::Completed;
+
+            // Record reputation for campaign owner
+            let rep_client = Self::rep_client(&env);
+            rep_client.record_campaign_backed(
+                &env.current_contract_address(),
+                &campaign.owner,
+            );
         }
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::Campaign(campaign_id), &campaign);
-        MilestoneFinalized {
+        env.storage().persistent().set(&key, &campaign);
+
+        MilestoneApproved {
             campaign_id,
-            milestone_id,
+            milestone_id: milestone_index,
         }
         .publish(&env);
+
         Ok(())
     }
 
-    pub fn request_refund(env: Env, donor: Address, campaign_id: u64) -> Result<(), Error> {
-        donor.require_auth();
+    pub fn reject_milestone(
+        env: Env,
+        campaign_id: u64,
+        milestone_index: u32,
+    ) -> Result<(), Error> {
+        let admin = Self::require_admin(&env)?;
+        admin.require_auth();
 
-        let campaign: Campaign = env
+        let ms_key = DataKey::CampaignMilestone(campaign_id, milestone_index);
+        let mut ms: Milestone = env
             .storage()
             .persistent()
-            .get(&DataKey::Campaign(campaign_id))
+            .get(&ms_key)
+            .ok_or(Error::MilestoneNotFound)?;
+
+        if ms.status != MilestoneStatus::Submitted {
+            return Err(Error::MilestoneNotSubmitted);
+        }
+
+        ms.status = MilestoneStatus::Rejected;
+        env.storage().persistent().set(&ms_key, &ms);
+
+        Ok(())
+    }
+
+    // ========================================================================
+    // DEADLINE / FAILURE
+    // ========================================================================
+
+    /// Permissionless: anyone can call after deadline if not funded.
+    pub fn check_deadline(env: Env, campaign_id: u64) -> Result<(), Error> {
+        let key = DataKey::Campaign(campaign_id);
+        let mut campaign: Campaign = env
+            .storage()
+            .persistent()
+            .get(&key)
             .ok_or(Error::CampaignNotFound)?;
 
-        if campaign.status == CampaignStatus::Funded
-            || campaign.status == CampaignStatus::Executing
-            || campaign.status == CampaignStatus::Completed
-        {
-            return Err(Error::CampaignAlreadyFunded);
+        if env.ledger().timestamp() <= campaign.deadline {
+            return Err(Error::DeadlineNotPassed);
+        }
+        if campaign.status != CampaignStatus::Campaigning {
+            return Err(Error::InvalidState);
         }
 
-        // If deadline not passed, only allowed if cancelled
-        if env.ledger().timestamp() <= campaign.deadline
-            && campaign.status != CampaignStatus::Cancelled
-        {
-            return Err(Error::CampaignActive);
-        }
+        campaign.status = CampaignStatus::Failed;
+        campaign.refund_progress = 0;
+        env.storage().persistent().set(&key, &campaign);
 
-        let amount: i128 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Pledge(campaign_id, donor.clone()))
-            .ok_or(Error::NoPledgeFound)?;
-        if amount == 0 {
-            return Err(Error::AlreadyRefunded);
-        }
-
-        env.storage()
-            .persistent()
-            .set(&DataKey::Pledge(campaign_id, donor.clone()), &0i128);
-
-        // Refund from CoreEscrow
-        let esc_addr: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::CoreEscrow)
-            .ok_or(Error::NotInitialized)?;
-
-        env.invoke_contract::<()>(
-            &esc_addr,
-            &Symbol::new(&env, "release_partial"),
-            (campaign.pool_id.clone(), donor.clone(), amount).into_val(&env),
-        );
+        CampaignFailed { id: campaign_id }.publish(&env);
         Ok(())
     }
 
-    pub fn get_campaign(env: Env, id: u64) -> Result<Campaign, Error> {
-        env.storage()
+    /// Permissionless batched refund: processes one batch of backers at a time.
+    pub fn process_refund_batch(env: Env, campaign_id: u64) -> Result<(), Error> {
+        let key = DataKey::Campaign(campaign_id);
+        let mut campaign: Campaign = env
+            .storage()
             .persistent()
-            .get(&DataKey::Campaign(id))
-            .ok_or(Error::CampaignNotFound)
+            .get(&key)
+            .ok_or(Error::CampaignNotFound)?;
+
+        if campaign.status != CampaignStatus::Failed
+            && campaign.status != CampaignStatus::Cancelled
+        {
+            return Err(Error::InvalidState);
+        }
+
+        let batch_idx = campaign.refund_progress;
+        let total_batches = (campaign.backer_count + BACKER_BATCH_SIZE - 1) / BACKER_BATCH_SIZE;
+        if batch_idx >= total_batches {
+            return Err(Error::RefundBatchDone);
+        }
+
+        let batch_key = DataKey::BackerBatch(campaign_id, batch_idx);
+        let batch: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&batch_key)
+            .unwrap_or(Vec::new(&env));
+
+        // Build refund list
+        let escrow_client = Self::escrow_client(&env);
+        let mut refund_list = Vec::new(&env);
+        let mut count = 0u32;
+
+        for backer in batch.iter() {
+            let pledge_key = DataKey::Pledge(campaign_id, backer.clone());
+            let amount: i128 = env.storage().persistent().get(&pledge_key).unwrap_or(0);
+            if amount > 0 {
+                refund_list.push_back((backer.clone(), amount));
+                env.storage().persistent().set(&pledge_key, &0i128);
+                count += 1;
+            }
+        }
+
+        if !refund_list.is_empty() {
+            escrow_client.refund_backers(&campaign.pool_id, &refund_list);
+        }
+
+        campaign.refund_progress = batch_idx + 1;
+        env.storage().persistent().set(&key, &campaign);
+
+        RefundBatchProcessed {
+            campaign_id,
+            batch_index: batch_idx,
+            count,
+        }
+        .publish(&env);
+
+        Ok(())
     }
 
-    // ========================================
-    // QUERY FUNCTIONS
-    // ========================================
+    // ========================================================================
+    // CANCELLATION (admin)
+    // ========================================================================
 
-    pub fn get_admin(env: Env) -> Result<Address, Error> {
+    pub fn cancel_campaign(env: Env, campaign_id: u64) -> Result<(), Error> {
+        let admin = Self::require_admin(&env)?;
+        admin.require_auth();
+
+        let key = DataKey::Campaign(campaign_id);
+        let mut campaign: Campaign = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::CampaignNotFound)?;
+
+        if campaign.status == CampaignStatus::Completed {
+            return Err(Error::InvalidState);
+        }
+
+        campaign.status = CampaignStatus::Cancelled;
+        campaign.refund_progress = 0;
+        env.storage().persistent().set(&key, &campaign);
+
+        CampaignCancelled { id: campaign_id }.publish(&env);
+        Ok(())
+    }
+
+    // ========================================================================
+    // ADMIN
+    // ========================================================================
+
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
+        let admin = Self::require_admin(&env)?;
+        admin.require_auth();
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+        Ok(())
+    }
+
+    // ========================================================================
+    // INTERNAL HELPERS
+    // ========================================================================
+
+    fn require_admin(env: &Env) -> Result<Address, Error> {
         env.storage()
             .instance()
             .get(&DataKey::Admin)
             .ok_or(Error::NotInitialized)
     }
 
-    pub fn get_project_reg(env: Env) -> Result<Address, Error> {
-        env.storage()
-            .instance()
-            .get(&DataKey::ProjectRegistry)
-            .ok_or(Error::NotInitialized)
-    }
-
-    pub fn get_core_escrow(env: Env) -> Result<Address, Error> {
-        env.storage()
+    fn escrow_client(env: &Env) -> CoreEscrowClient<'_> {
+        let addr: Address = env
+            .storage()
             .instance()
             .get(&DataKey::CoreEscrow)
-            .ok_or(Error::NotInitialized)
+            .unwrap();
+        CoreEscrowClient::new(env, &addr)
     }
 
-    pub fn get_voting_contract(env: Env) -> Result<Address, Error> {
-        env.storage()
-            .instance()
-            .get(&DataKey::VotingContract)
-            .ok_or(Error::NotInitialized)
-    }
-
-    pub fn get_reputation_reg(env: Env) -> Result<Address, Error> {
-        env.storage()
+    fn rep_client(env: &Env) -> ReputationRegistryClient<'_> {
+        let addr: Address = env
+            .storage()
             .instance()
             .get(&DataKey::ReputationRegistry)
-            .ok_or(Error::NotInitialized)
-    }
-
-    pub fn get_payment_router(env: Env) -> Result<Address, Error> {
-        env.storage()
-            .instance()
-            .get(&DataKey::PaymentRouter)
-            .ok_or(Error::NotInitialized)
-    }
-
-    pub fn get_fee_account(env: Env) -> Result<Address, Error> {
-        env.storage()
-            .instance()
-            .get(&DataKey::FeeAccount)
-            .ok_or(Error::NotInitialized)
-    }
-
-    pub fn get_treasury(env: Env) -> Result<Address, Error> {
-        env.storage()
-            .instance()
-            .get(&DataKey::Treasury)
-            .ok_or(Error::NotInitialized)
-    }
-
-    // ========================================
-    // ADMINISTRATIVE FUNCTIONS
-    // ========================================
-
-    pub fn update_admin(env: Env, new_admin: Address) -> Result<(), Error> {
-        let admin = Self::get_admin(env.clone())?;
-        admin.require_auth();
-
-        if Self::is_zero_address(&env, &new_admin) {
-            panic!("new admin cannot be zero address");
-        }
-
-        env.storage().instance().set(&DataKey::Admin, &new_admin);
-        Ok(())
-    }
-
-    pub fn update_fee_account(env: Env, new_fee_account: Address) -> Result<(), Error> {
-        let admin = Self::get_admin(env.clone())?;
-        admin.require_auth();
-
-        if Self::is_zero_address(&env, &new_fee_account) {
-            panic!("new fee account cannot be zero address");
-        }
-
-        env.storage()
-            .instance()
-            .set(&DataKey::FeeAccount, &new_fee_account);
-        Ok(())
-    }
-
-    pub fn update_treasury(env: Env, new_treasury: Address) -> Result<(), Error> {
-        let admin = Self::get_admin(env.clone())?;
-        admin.require_auth();
-
-        if Self::is_zero_address(&env, &new_treasury) {
-            panic!("new treasury cannot be zero address");
-        }
-
-        env.storage()
-            .instance()
-            .set(&DataKey::Treasury, &new_treasury);
-        Ok(())
-    }
-
-    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
-        let admin = Self::get_admin(env.clone())?;
-        admin.require_auth();
-
-        env.deployer().update_current_contract_wasm(new_wasm_hash);
-        Ok(())
-    }
-
-    // ========================================
-    // INTERNAL HELPERS
-    // ========================================
-
-    fn is_zero_address(_env: &Env, _address: &Address) -> bool {
-        // Placeholder as Soroban lacks a native zero address.
-        false
+            .unwrap();
+        ReputationRegistryClient::new(env, &addr)
     }
 }

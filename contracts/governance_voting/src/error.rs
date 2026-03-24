@@ -4,17 +4,15 @@ use soroban_sdk::contracterror;
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum Error {
-    AlreadyInitialized = 1,
-    NotAuthorized = 2,
-    SessionCollision = 3,
-    SessionNotFound = 4,
-    SessionNotActive = 5,
-    VotingNotStarted = 6,
-    VotingEnded = 7,
-    AlreadyVoted = 8,
-    OptionNotFound = 9,
-    VotingInProgress = 10,
-    NotQFRound = 11,
-    RoundNotEnded = 12,
-    NotInitialized = 13,
+    AlreadyInitialized = 500,
+    NotInitialized = 501,
+    NotAuthorized = 502,
+    ModuleNotAuthorized = 503,
+    SessionNotFound = 504,
+    SessionNotActive = 505,
+    AlreadyVoted = 506,
+    InvalidOption = 507,
+    SessionNotEnded = 508,
+    VotingNotStarted = 509,
+    InvalidTimeRange = 510,
 }

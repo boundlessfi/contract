@@ -10,4 +10,4 @@ mod tests;
 
 pub use crate::contract::ReputationRegistry;
 pub use crate::contract::ReputationRegistryClient;
-pub use crate::storage::{ActivityCategory, ContributorProfile};
+pub use crate::storage::{ContributorProfile, CreditData};

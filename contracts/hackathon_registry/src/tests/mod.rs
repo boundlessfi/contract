@@ -1,167 +1,324 @@
-use super::*;
-use crate::storage::{HackathonStatus, PrizeTier};
-use core_escrow::{CoreEscrow, CoreEscrowClient, ModuleType};
-use reputation_registry::{ReputationRegistry, ReputationRegistryClient};
-use soroban_sdk::{
-    testutils::{Address as _, Ledger},
-    Address, Env, String, Vec,
-};
+#![cfg(test)]
 
-#[test]
-fn test_hackathon_v2_full_lifecycle() {
+use crate::contract::{HackathonRegistry, HackathonRegistryClient};
+use crate::storage::HackathonStatus;
+use core_escrow::{CoreEscrow, CoreEscrowClient};
+use reputation_registry::{ReputationRegistry, ReputationRegistryClient};
+use soroban_sdk::testutils::Address as _;
+use soroban_sdk::testutils::Ledger;
+use soroban_sdk::token::{StellarAssetClient, TokenClient};
+use soroban_sdk::{Address, Env, String, Vec};
+
+struct TestEnv<'a> {
+    env: Env,
+    client: HackathonRegistryClient<'a>,
+    _escrow_client: CoreEscrowClient<'a>,
+    rep_client: ReputationRegistryClient<'a>,
+    admin: Address,
+    token: TokenClient<'a>,
+    token_addr: Address,
+}
+
+fn setup() -> TestEnv<'static> {
     let env = Env::default();
     env.mock_all_auths();
 
-    // 1. Setup ecosystem
-    let admins = Address::generate(&env);
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
 
-    let esc_id = env.register(CoreEscrow, ());
-    let esc_client = CoreEscrowClient::new(&env, &esc_id);
-    esc_client.init_core_escrow(&admins);
-
-    let rep_id = env.register(ReputationRegistry, ());
-    let rep_client = ReputationRegistryClient::new(&env, &rep_id);
-    rep_client.init_reputation_reg(&admins);
-
-    let reg_id = env.register(HackathonRegistry, ());
-    let client = HackathonRegistryClient::new(&env, &reg_id);
-
-    // Dummy addresses for mocks
-    let proj_reg = Address::generate(&env);
-    let voting = Address::generate(&env);
-
-    client.init_hackathon_reg(&admins, &proj_reg, &esc_id, &voting, &rep_id);
-    rep_client.add_authorized_module(&reg_id);
-
-    // 2. Create Hackathon Assets
-    let organizer = Address::generate(&env);
-    let judge1 = Address::generate(&env);
-    let judge2 = Address::generate(&env);
-
+    // Deploy token
     let token_admin = Address::generate(&env);
-    let asset = env
+    let token_addr = env
         .register_stellar_asset_contract_v2(token_admin)
         .address();
-    let token_admin_client = soroban_sdk::token::StellarAssetClient::new(&env, &asset);
+    let token = TokenClient::new(&env, &token_addr);
+    let sac = StellarAssetClient::new(&env, &token_addr);
 
-    token_admin_client.mint(&organizer, &100000); // Plenty for main and tracks
+    // Deploy CoreEscrow
+    let escrow_id = env.register(CoreEscrow, ());
+    let escrow_client = CoreEscrowClient::new(&env, &escrow_id);
+    escrow_client.init(&admin, &treasury);
 
-    // 3. Create Hackathon
-    let main_pool_id = esc_client.create_pool(
-        &organizer,
-        &ModuleType::Hackathon,
-        &1u64,
-        &10000i128,
-        &asset,
-        &(env.ledger().timestamp() + 10000),
-        &reg_id,
+    // Deploy ReputationRegistry
+    let rep_id = env.register(ReputationRegistry, ());
+    let rep_client = ReputationRegistryClient::new(&env, &rep_id);
+    rep_client.init(&admin);
+
+    // Deploy HackathonRegistry
+    let hack_id = env.register(HackathonRegistry, ());
+    let client = HackathonRegistryClient::new(&env, &hack_id);
+    client.init(&admin, &escrow_id, &rep_id);
+
+    // Authorize HackathonRegistry in CoreEscrow and ReputationRegistry
+    escrow_client.authorize_module(&hack_id);
+    rep_client.add_authorized_module(&hack_id);
+
+    // Mint tokens to admin for hackathon creation
+    sac.mint(&admin, &1_000_000);
+
+    TestEnv {
+        env,
+        client,
+        _escrow_client: escrow_client,
+        rep_client,
+        admin,
+        token,
+        token_addr,
+    }
+}
+
+#[test]
+fn test_create_hackathon() {
+    let t = setup();
+
+    let creator = t.admin.clone();
+
+    let mut prize_tiers = Vec::new(&t.env);
+    prize_tiers.push_back(6000u32);
+    prize_tiers.push_back(4000u32);
+
+    let hid = t.client.create_hackathon(
+        &creator,
+        &String::from_str(&t.env, "Stellar Hackathon"),
+        &String::from_str(&t.env, "QmHackMeta"),
+        &10_000,
+        &t.token_addr,
+        &1000,
+        &2000,
+        &3000,
+        &100,
+        &prize_tiers,
     );
 
-    let mut tiers = Vec::new(&env);
-    tiers.push_back(PrizeTier { rank: 1, pct: 6000 });
-    tiers.push_back(PrizeTier { rank: 2, pct: 4000 });
+    assert_eq!(hid, 1);
 
-    let mut judges = Vec::new(&env);
-    judges.push_back(judge1.clone());
-    judges.push_back(judge2.clone());
+    let hackathon = t.client.get_hackathon(&hid);
+    assert_eq!(hackathon.id, 1);
+    assert_eq!(hackathon.creator, creator);
+    assert_eq!(hackathon.prize_pool, 10_000);
+    assert_eq!(hackathon.status, HackathonStatus::Registration);
+    assert_eq!(hackathon.max_participants, 100);
+    assert_eq!(hackathon.judge_count, 0);
+    assert_eq!(hackathon.submission_count, 0);
+}
 
-    let hid = client.create_hackathon(
-        &organizer,
-        &1u64,
-        &String::from_str(&env, "ipfs://meta"),
-        &main_pool_id,
-        &asset,
-        &tiers,
-        &1000u64, // submission deadline
-        &2000u64, // judging deadline
-        &judges,
+#[test]
+fn test_full_lifecycle() {
+    let t = setup();
+
+    let creator = t.admin.clone();
+
+    // Create hackathon
+    let mut prize_tiers = Vec::new(&t.env);
+    prize_tiers.push_back(6000u32);
+    prize_tiers.push_back(4000u32);
+
+    let hid = t.client.create_hackathon(
+        &creator,
+        &String::from_str(&t.env, "Stellar Hackathon"),
+        &String::from_str(&t.env, "QmHackMeta"),
+        &10_000,
+        &t.token_addr,
+        &1000, // registration deadline
+        &2000, // submission deadline
+        &3000, // judging deadline
+        &100,
+        &prize_tiers,
     );
     assert_eq!(hid, 1);
 
-    // 4. Add Sponsored Track
-    let sponsor = Address::generate(&env);
-    token_admin_client.mint(&sponsor, &50000);
+    // Add judges
+    let judge1 = Address::generate(&t.env);
+    let judge2 = Address::generate(&t.env);
+    t.client.add_judge(&hid, &judge1);
+    t.client.add_judge(&hid, &judge2);
 
-    let track_pool_id = esc_client.create_pool(
-        &sponsor,
-        &ModuleType::Hackathon,
-        &2u64,
-        &5000i128,
-        &asset,
-        &(env.ledger().timestamp() + 10000),
-        &reg_id,
+    let hackathon = t.client.get_hackathon(&hid);
+    assert_eq!(hackathon.judge_count, 2);
+
+    // Register teams (spend credits)
+    let lead1 = Address::generate(&t.env);
+    let lead2 = Address::generate(&t.env);
+
+    // Init profiles so they have credits
+    t.rep_client.init_profile(&lead1);
+    t.rep_client.init_profile(&lead2);
+
+    t.env.ledger().set_timestamp(500); // before registration deadline
+
+    t.client.register_team(&hid, &lead1);
+    t.client.register_team(&hid, &lead2);
+
+    let hackathon = t.client.get_hackathon(&hid);
+    assert_eq!(hackathon.submission_count, 2);
+
+    // Submit projects
+    t.env.ledger().set_timestamp(1500); // between registration and submission deadlines
+
+    t.client
+        .submit_project(&hid, &lead1, &String::from_str(&t.env, "ipfs://project-a"));
+    t.client
+        .submit_project(&hid, &lead2, &String::from_str(&t.env, "ipfs://project-b"));
+
+    // Score submissions (after submission deadline)
+    t.env.ledger().set_timestamp(2500);
+
+    t.client.score_submission(&hid, &judge1, &lead1, &90);
+    t.client.score_submission(&hid, &judge2, &lead1, &80);
+    t.client.score_submission(&hid, &judge1, &lead2, &70);
+    t.client.score_submission(&hid, &judge2, &lead2, &60);
+
+    // Verify scores
+    let sub1 = t.client.get_submission(&hid, &lead1);
+    assert_eq!(sub1.total_score, 170); // 90 + 80
+    assert_eq!(sub1.score_count, 2);
+
+    let sub2 = t.client.get_submission(&hid, &lead2);
+    assert_eq!(sub2.total_score, 130); // 70 + 60
+    assert_eq!(sub2.score_count, 2);
+
+    // Finalize (after judging deadline)
+    t.env.ledger().set_timestamp(3500);
+
+    let _creator_balance_before = t.token.balance(&creator);
+    let lead1_balance_before = t.token.balance(&lead1);
+    let lead2_balance_before = t.token.balance(&lead2);
+
+    t.client.finalize_hackathon(&hid);
+
+    // Verify hackathon completed
+    let hackathon = t.client.get_hackathon(&hid);
+    assert_eq!(hackathon.status, HackathonStatus::Completed);
+
+    // Verify prize distribution
+    // lead1 gets 60% of 10000 = 6000
+    // lead2 gets 40% of 10000 = 4000
+    let lead1_balance_after = t.token.balance(&lead1);
+    let lead2_balance_after = t.token.balance(&lead2);
+
+    assert_eq!(lead1_balance_after - lead1_balance_before, 6000);
+    assert_eq!(lead2_balance_after - lead2_balance_before, 4000);
+
+    // Verify reputation was recorded
+    let profile1 = t.rep_client.get_profile(&lead1);
+    assert!(profile1.hackathons_entered >= 1);
+    assert!(profile1.hackathons_won >= 1);
+    assert!(profile1.overall_score >= 100);
+
+    let profile2 = t.rep_client.get_profile(&lead2);
+    assert!(profile2.hackathons_entered >= 1);
+    assert_eq!(profile2.hackathons_won, 0);
+}
+
+#[test]
+fn test_cancel_hackathon() {
+    let t = setup();
+
+    let creator = t.admin.clone();
+
+    let mut prize_tiers = Vec::new(&t.env);
+    prize_tiers.push_back(6000u32);
+    prize_tiers.push_back(4000u32);
+
+    let creator_balance_before = t.token.balance(&creator);
+
+    let hid = t.client.create_hackathon(
+        &creator,
+        &String::from_str(&t.env, "Cancel Me"),
+        &String::from_str(&t.env, "QmCancel"),
+        &10_000,
+        &t.token_addr,
+        &1000,
+        &2000,
+        &3000,
+        &50,
+        &prize_tiers,
     );
 
-    let tid = client.add_sponsored_track(
-        &hid,
-        &String::from_str(&env, "Best DeFi"),
-        &sponsor,
-        &5000i128,
-        &track_pool_id,
-        &tiers,
-    );
-    assert_eq!(tid, 1);
-
-    // 5. Submissions
-    let lead1 = Address::generate(&env);
-    let lead2 = Address::generate(&env);
-    rep_client.init_reputation_reg_profile(&lead1);
-    rep_client.init_reputation_reg_profile(&lead2);
-
-    let mut tracks = Vec::new(&env);
-    tracks.push_back(tid);
-
-    env.ledger().set_timestamp(500);
-
-    client.register_and_submit(
-        &lead1,
-        &hid,
-        &Vec::new(&env),
-        &String::from_str(&env, "Project A"),
-        &String::from_str(&env, "ipfs://a"),
-        &tracks,
-    );
-
-    client.register_and_submit(
-        &lead2,
-        &hid,
-        &Vec::new(&env),
-        &String::from_str(&env, "Project B"),
-        &String::from_str(&env, "ipfs://b"),
-        &tracks,
-    );
-
-    // 6. Judging
-    env.ledger().set_timestamp(1500); // Between submission and judging end
-
-    client.score_submission(&judge1, &hid, &lead1, &80);
-    client.score_submission(&judge2, &hid, &lead1, &90);
-    client.score_submission(&judge1, &hid, &lead2, &70);
-    client.score_submission(&judge2, &hid, &lead2, &70);
-
-    // 7. Finalize
-    env.ledger().set_timestamp(2500); // Past judging end
-    client.finalize_judging(&hid);
-
-    let sub1 = client.get_submission(&hid, &lead1);
-    let sub2 = client.get_submission(&hid, &lead2);
-
-    assert_eq!(sub1.final_score, 8500); // (80+90)/2 * 100
-    assert_eq!(sub2.final_score, 7000); // (70+70)/2 * 100
-
-    // 8. Distribution
-    let mut rankings = Vec::new(&env);
-    rankings.push_back(lead1.clone());
-    rankings.push_back(lead2.clone());
-
-    client.distribute_prizes(&hid, &rankings);
-
+    // After creation, 10000 tokens transferred to escrow
+    let creator_balance_after_create = t.token.balance(&creator);
     assert_eq!(
-        client.get_hackathon(&hid).status,
-        HackathonStatus::Completed
+        creator_balance_before - creator_balance_after_create,
+        10_000
     );
 
-    // Check reputation for lead1 (winner)
-    let profile = rep_client.get_reputation(&lead1);
-    assert!(profile.overall_score >= 1000);
+    // Cancel
+    t.client.cancel_hackathon(&hid);
+
+    // Verify refund
+    let creator_balance_after_cancel = t.token.balance(&creator);
+    assert_eq!(creator_balance_after_cancel, creator_balance_before);
+
+    // Verify status
+    let hackathon = t.client.get_hackathon(&hid);
+    assert_eq!(hackathon.status, HackathonStatus::Cancelled);
+}
+
+#[test]
+fn test_disqualify_submission() {
+    let t = setup();
+
+    let creator = t.admin.clone();
+
+    let mut prize_tiers = Vec::new(&t.env);
+    prize_tiers.push_back(10000u32); // 100% to winner
+
+    let hid = t.client.create_hackathon(
+        &creator,
+        &String::from_str(&t.env, "DQ Test"),
+        &String::from_str(&t.env, "QmDQ"),
+        &10_000,
+        &t.token_addr,
+        &1000,
+        &2000,
+        &3000,
+        &50,
+        &prize_tiers,
+    );
+
+    // Add judge
+    let judge = Address::generate(&t.env);
+    t.client.add_judge(&hid, &judge);
+
+    // Register teams
+    let lead1 = Address::generate(&t.env);
+    let lead2 = Address::generate(&t.env);
+    t.rep_client.init_profile(&lead1);
+    t.rep_client.init_profile(&lead2);
+
+    t.env.ledger().set_timestamp(500);
+    t.client.register_team(&hid, &lead1);
+    t.client.register_team(&hid, &lead2);
+
+    // Submit
+    t.env.ledger().set_timestamp(1500);
+    t.client
+        .submit_project(&hid, &lead1, &String::from_str(&t.env, "ipfs://dq-a"));
+    t.client
+        .submit_project(&hid, &lead2, &String::from_str(&t.env, "ipfs://dq-b"));
+
+    // Score - lead1 gets highest score
+    t.env.ledger().set_timestamp(2500);
+    t.client.score_submission(&hid, &judge, &lead1, &95);
+    t.client.score_submission(&hid, &judge, &lead2, &80);
+
+    // Disqualify lead1 (the top scorer)
+    t.client.disqualify_submission(&hid, &lead1);
+
+    let sub1 = t.client.get_submission(&hid, &lead1);
+    assert!(sub1.disqualified);
+
+    // Finalize
+    t.env.ledger().set_timestamp(3500);
+
+    let lead2_balance_before = t.token.balance(&lead2);
+    t.client.finalize_hackathon(&hid);
+
+    // lead2 should get 100% since lead1 is disqualified
+    let lead2_balance_after = t.token.balance(&lead2);
+    assert_eq!(lead2_balance_after - lead2_balance_before, 10_000);
+
+    // lead1 gets nothing
+    let lead1_balance = t.token.balance(&lead1);
+    assert_eq!(lead1_balance, 0);
 }

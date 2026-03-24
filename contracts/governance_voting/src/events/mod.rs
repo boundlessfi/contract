@@ -19,16 +19,15 @@ pub struct VoteCast {
 
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionConcluded {
+    pub session_id: BytesN<32>,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct QFDonationRecorded {
     pub session_id: BytesN<32>,
     pub donor: Address,
     pub option_id: u32,
     pub amount: i128,
-}
-
-#[contractevent]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ModuleAuthorized {
-    pub module: Address,
-    pub authorized: bool,
 }

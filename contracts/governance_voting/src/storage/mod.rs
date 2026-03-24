@@ -24,7 +24,7 @@ pub struct VoteOption {
     pub id: u32,
     pub label: String,
     pub votes: u32,
-    pub weighted_votes: i128,
+    pub weighted_votes: u64,
 }
 
 #[contracttype]
@@ -45,20 +45,19 @@ pub struct VotingSession {
 }
 
 #[contracttype]
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct VoteRecord {
     pub voter: Address,
     pub option_id: u32,
     pub weight: u32,
-    pub timestamp: u64,
+    pub voted_at: u64,
 }
 
-// For QF: tracking donations per project
 #[contracttype]
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct QFDonation {
     pub donor: Address,
-    pub option_id: u32, // project index in session
+    pub option_id: u32,
     pub amount: i128,
 }
 
@@ -66,13 +65,13 @@ pub struct QFDonation {
 #[derive(Clone)]
 pub enum DataKey {
     Admin,
-    ReputationRegistry,
-    FeeAccount,
-    Treasury,
+    Version,
+    AuthorizedModule(Address),
     Session(BytesN<32>),
-    Option(BytesN<32>, u32),        // session_id, option_id -> VoteOption
-    OptionCount(BytesN<32>),        // session_id -> u32
-    Vote(BytesN<32>, Address),      // (session_id, voter) -> VoteRecord
-    OptionSumSqrt(BytesN<32>, u32), // (session_id, option_id) -> i128 (sum of sqrt donations)
-    AuthorizedModule(Address),      // address -> bool
+    VoteOption(BytesN<32>, u32),
+    VoteRecord(BytesN<32>, Address),
+    QFDonation(BytesN<32>, Address, u32),
+    OptionCount(BytesN<32>),
+    // Stores the scaled sum of sqrt(donation) for each option (for QF)
+    OptionSumSqrt(BytesN<32>, u32),
 }

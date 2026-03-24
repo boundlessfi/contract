@@ -4,8 +4,10 @@ use soroban_sdk::contracterror;
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum Error {
-    AlreadyInitialized = 1,
-    NotInitialized = 2,
-    ProfileNotFound = 3,
-    ModuleNotAuthorized = 4,
+    AlreadyInitialized = 300,
+    NotInitialized = 301,
+    ProfileNotFound = 302,
+    ModuleNotAuthorized = 303,
+    InsufficientCredits = 304,
+    RechargeNotReady = 305,
 }
