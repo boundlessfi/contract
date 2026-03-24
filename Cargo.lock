@@ -320,6 +320,7 @@ version = "0.0.0"
 dependencies = [
  "boundless-types",
  "core_escrow",
+ "governance_voting",
  "reputation_registry",
  "soroban-sdk",
 ]

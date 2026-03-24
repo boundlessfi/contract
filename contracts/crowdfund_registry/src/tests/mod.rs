@@ -3,6 +3,7 @@
 use crate::contract::{CrowdfundRegistry, CrowdfundRegistryClient};
 use crate::storage::CampaignStatus;
 use core_escrow::{CoreEscrow, CoreEscrowClient};
+use governance_voting::{GovernanceVoting, GovernanceVotingClient};
 use reputation_registry::{ReputationRegistry, ReputationRegistryClient};
 use soroban_sdk::testutils::{Address as _, Ledger};
 use soroban_sdk::token::{StellarAssetClient, TokenClient};
@@ -13,6 +14,7 @@ struct TestEnv<'a> {
     client: CrowdfundRegistryClient<'a>,
     escrow_client: CoreEscrowClient<'a>,
     rep_client: ReputationRegistryClient<'a>,
+    gov_client: GovernanceVotingClient<'a>,
     admin: Address,
     token: TokenClient<'a>,
     token_addr: Address,
@@ -43,14 +45,20 @@ fn setup() -> TestEnv<'static> {
     let rep_client = ReputationRegistryClient::new(&env, &rep_id);
     rep_client.init(&admin);
 
+    // Deploy GovernanceVoting
+    let gov_id = env.register(GovernanceVoting, ());
+    let gov_client = GovernanceVotingClient::new(&env, &gov_id);
+    gov_client.init(&admin);
+
     // Deploy CrowdfundRegistry
     let cf_id = env.register(CrowdfundRegistry, ());
     let client = CrowdfundRegistryClient::new(&env, &cf_id);
-    client.init(&admin, &escrow_id, &rep_id);
+    client.init(&admin, &escrow_id, &rep_id, &gov_id);
 
-    // Authorize CrowdfundRegistry in CoreEscrow and ReputationRegistry
+    // Authorize CrowdfundRegistry in CoreEscrow, ReputationRegistry, GovernanceVoting
     escrow_client.authorize_module(&cf_id);
     rep_client.add_authorized_module(&cf_id);
+    gov_client.add_authorized_module(&cf_id);
 
     // Mint tokens to donors
     sac.mint(&admin, &100_000);
@@ -60,6 +68,7 @@ fn setup() -> TestEnv<'static> {
         client,
         escrow_client,
         rep_client,
+        gov_client,
         admin,
         token,
         token_addr,
@@ -71,6 +80,22 @@ fn make_milestones(env: &Env) -> Vec<(String, u32)> {
     ms.push_back((String::from_str(env, "MVP"), 5000u32));
     ms.push_back((String::from_str(env, "Beta"), 5000u32));
     ms
+}
+
+/// Helper: advance a campaign from Draft → Submitted → Approved (with vote session) → vote → Campaigning
+fn advance_to_campaigning(t: &TestEnv, campaign_id: u64) {
+    // Owner submits for review
+    t.client.submit_for_review(&campaign_id);
+
+    // Admin approves (creates voting session with duration=1000, threshold=1)
+    let _session_id = t.client.approve_campaign(&campaign_id, &1000, &1);
+
+    // A voter votes (option 0 = "Approve")
+    let voter = Address::generate(&t.env);
+    t.client.vote_campaign(&voter, &campaign_id, &0);
+
+    // Check threshold → transitions to Campaigning
+    t.client.check_vote_threshold(&campaign_id);
 }
 
 #[test]
@@ -90,9 +115,64 @@ fn test_create_campaign() {
 
     assert_eq!(cid, 1);
     let campaign = t.client.get_campaign(&1);
-    assert_eq!(campaign.status, CampaignStatus::Campaigning);
+    assert_eq!(campaign.status, CampaignStatus::Draft);
     assert_eq!(campaign.funding_goal, 10000);
     assert_eq!(campaign.milestone_count, 2);
+}
+
+#[test]
+fn test_governance_flow() {
+    let t = setup();
+    let owner = t.admin.clone();
+
+    let cid = t.client.create_campaign(
+        &owner,
+        &String::from_str(&t.env, "Gov flow"),
+        &10000i128,
+        &t.token_addr,
+        &(t.env.ledger().timestamp() + 86400),
+        &make_milestones(&t.env),
+        &100i128,
+    );
+
+    assert_eq!(t.client.get_campaign(&cid).status, CampaignStatus::Draft);
+
+    // Submit for review
+    t.client.submit_for_review(&cid);
+    assert_eq!(t.client.get_campaign(&cid).status, CampaignStatus::Submitted);
+
+    // Admin approves → creates vote session
+    let session_id = t.client.approve_campaign(&cid, &1000, &1);
+    assert_eq!(t.client.get_campaign(&cid).status, CampaignStatus::Submitted);
+    assert_eq!(t.client.get_vote_session(&cid), session_id);
+
+    // Vote
+    let voter = Address::generate(&t.env);
+    t.client.vote_campaign(&voter, &cid, &0);
+
+    // Check threshold → Campaigning
+    t.client.check_vote_threshold(&cid);
+    assert_eq!(t.client.get_campaign(&cid).status, CampaignStatus::Campaigning);
+}
+
+#[test]
+fn test_reject_campaign() {
+    let t = setup();
+    let owner = t.admin.clone();
+
+    let cid = t.client.create_campaign(
+        &owner,
+        &String::from_str(&t.env, "Rejected"),
+        &10000i128,
+        &t.token_addr,
+        &(t.env.ledger().timestamp() + 86400),
+        &make_milestones(&t.env),
+        &100i128,
+    );
+
+    t.client.submit_for_review(&cid);
+    t.client.reject_campaign(&cid);
+    assert_eq!(t.client.get_campaign(&cid).status, CampaignStatus::Draft);
 }
 
 #[test]
@@ -116,6 +196,9 @@ fn test_full_lifecycle() {
         &make_milestones(&t.env),
         &100i128,
     );
+
+    // Advance through governance flow
+    advance_to_campaigning(&t, cid);
 
     // Pledge enough to fund (fee-on-top: backers pay more than the pledge)
     t.client.pledge(&donor1, &cid, &600);
@@ -163,6 +246,9 @@ fn test_failed_campaign_refund() {
         &100i128,
     );
 
+    // Advance through governance flow
+    advance_to_campaigning(&t, cid);
+
     // Pledge but not enough to fund
     t.client.pledge(&donor, &cid, &500);
 
@@ -204,6 +290,9 @@ fn test_cancel_campaign() {
         &100i128,
     );
 
+    // Advance through governance flow
+    advance_to_campaigning(&t, cid);
+
     t.client.pledge(&donor, &cid, &200);
 
     // Admin cancels
@@ -235,6 +324,9 @@ fn test_reject_milestone() {
         &make_milestones(&t.env),
         &100i128,
     );
+
+    // Advance through governance flow
+    advance_to_campaigning(&t, cid);
 
     t.client.pledge(&donor, &cid, &1100);
 

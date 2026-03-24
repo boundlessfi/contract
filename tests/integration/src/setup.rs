@@ -83,7 +83,7 @@ pub fn setup_platform() -> Platform<'static> {
 
     let crowdfund_addr = env.register(CrowdfundRegistry, ());
     let crowdfund = CrowdfundRegistryClient::new(&env, &crowdfund_addr);
-    crowdfund.init(&admin, &escrow_addr, &reputation_addr);
+    crowdfund.init(&admin, &escrow_addr, &reputation_addr, &governance_addr);
 
     let grant_addr = env.register(GrantHub, ());
     let grant = GrantHubClient::new(&env, &grant_addr);

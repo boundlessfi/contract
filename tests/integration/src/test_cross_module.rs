@@ -1,10 +1,19 @@
 /// Cross-module integration test: a single contributor participates across all 4 modules
 /// and we verify unified reputation, SparkCredits, and fee accounting.
-use crate::setup::setup_platform;
+use crate::setup::{setup_platform, Platform};
 use bounty_registry::storage::BountyType;
 use boundless_types::ActivityCategory;
 use soroban_sdk::testutils::{Address as _, Ledger};
 use soroban_sdk::{Address, String, Vec};
+
+/// Helper: advance a campaign from Draft → Campaigning via governance flow
+fn advance_to_campaigning(p: &Platform, campaign_id: u64) {
+    p.crowdfund.submit_for_review(&campaign_id);
+    p.crowdfund.approve_campaign(&campaign_id, &1000, &1);
+    let voter = Address::generate(&p.env);
+    p.crowdfund.vote_campaign(&voter, &campaign_id, &0);
+    p.crowdfund.check_vote_threshold(&campaign_id);
+}
 
 #[test]
 fn test_single_contributor_across_all_modules() {
@@ -67,6 +76,8 @@ fn test_single_contributor_across_all_modules() {
         &milestones,
         &100i128,
     );
+
+    advance_to_campaigning(&p, cid);
 
     p.crowdfund.pledge(&contributor, &cid, &2_500);
 
@@ -160,6 +171,8 @@ fn test_platform_fee_accounting_via_pledges() {
         &milestones,
         &100i128,
     );
+
+    advance_to_campaigning(&p, cid);
 
     let treasury_start = p.token.balance(&p.treasury);
     let insurance_start = p.escrow.get_insurance_balance();

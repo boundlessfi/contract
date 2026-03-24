@@ -1,7 +1,7 @@
-/// End-to-end crowdfunding tests across CoreEscrow + ReputationRegistry + CrowdfundRegistry.
-/// Tests full campaign lifecycle: create → pledge → fund → milestones → complete,
+/// End-to-end crowdfunding tests across CoreEscrow + ReputationRegistry + GovernanceVoting + CrowdfundRegistry.
+/// Tests full campaign lifecycle: create → governance approval → pledge → fund → milestones → complete,
 /// and failure path: pledge → deadline → batched refund.
-use crate::setup::setup_platform;
+use crate::setup::{setup_platform, Platform};
 use crowdfund_registry::storage::CampaignStatus;
 use soroban_sdk::testutils::{Address as _, Ledger};
 use soroban_sdk::{Address, String, Vec};
@@ -11,6 +11,15 @@ fn make_milestones(env: &soroban_sdk::Env) -> Vec<(String, u32)> {
     ms.push_back((String::from_str(env, "MVP"), 5000u32));
     ms.push_back((String::from_str(env, "Beta"), 5000u32));
     ms
+}
+
+/// Helper: advance a campaign from Draft → Submitted → Approved → Voted → Campaigning
+fn advance_to_campaigning(p: &Platform, campaign_id: u64) {
+    p.crowdfund.submit_for_review(&campaign_id);
+    p.crowdfund.approve_campaign(&campaign_id, &1000, &1);
+    let voter = Address::generate(&p.env);
+    p.crowdfund.vote_campaign(&voter, &campaign_id, &0);
+    p.crowdfund.check_vote_threshold(&campaign_id);
 }
 
 #[test]
@@ -34,8 +43,11 @@ fn test_campaign_full_success_lifecycle() {
     );
 
     let campaign = p.crowdfund.get_campaign(&cid);
-    assert_eq!(campaign.status, CampaignStatus::Campaigning);
-    assert_eq!(campaign.funding_goal, 5_000);
+    assert_eq!(campaign.status, CampaignStatus::Draft);
+
+    // Advance through governance flow
+    advance_to_campaigning(&p, cid);
+    assert_eq!(p.crowdfund.get_campaign(&cid).status, CampaignStatus::Campaigning);
 
     // Backers pledge (fee on top via CoreEscrow.route_pledge)
     p.crowdfund.pledge(&backer1, &cid, &3_000);
@@ -86,6 +98,9 @@ fn test_campaign_failure_with_batched_refund() {
         &100i128,
     );
 
+    // Advance through governance flow
+    advance_to_campaigning(&p, cid);
+
     // Pledge but far below goal
     p.crowdfund.pledge(&backer, &cid, &1_000);
     let backer_balance_after_pledge = p.token.balance(&backer);
@@ -124,6 +139,9 @@ fn test_campaign_cancel_with_refund() {
         &50i128,
     );
 
+    // Advance through governance flow
+    advance_to_campaigning(&p, cid);
+
     p.crowdfund.pledge(&backer, &cid, &500);
     let backer_balance = p.token.balance(&backer);
 
@@ -153,6 +171,9 @@ fn test_milestone_rejection_and_resubmit() {
         &make_milestones(&p.env),
         &100i128,
     );
+
+    // Advance through governance flow
+    advance_to_campaigning(&p, cid);
 
     // Fund it
     p.crowdfund.pledge(&backer, &cid, &2_500);
@@ -196,6 +217,9 @@ fn test_pledge_fee_routing() {
         &100i128,
     );
 
+    // Advance through governance flow
+    advance_to_campaigning(&p, cid);
+
     let treasury_before = p.token.balance(&p.treasury);
     let insurance_before = p.escrow.get_insurance_balance();
 
@@ -208,4 +232,66 @@ fn test_pledge_fee_routing() {
 
     assert_eq!(treasury_after - treasury_before, 45);
     assert_eq!(insurance_after - insurance_before, 5);
+}
+
+#[test]
+fn test_governance_approval_flow() {
+    let p = setup_platform();
+    let owner = Address::generate(&p.env);
+
+    let cid = p.crowdfund.create_campaign(
+        &owner,
+        &String::from_str(&p.env, "Governance test"),
+        &5_000i128,
+        &p.token_addr,
+        &(p.env.ledger().timestamp() + 86400),
+        &make_milestones(&p.env),
+        &100i128,
+    );
+
+    // Starts in Draft
+    assert_eq!(p.crowdfund.get_campaign(&cid).status, CampaignStatus::Draft);
+
+    // Submit for review → Submitted
+    p.crowdfund.submit_for_review(&cid);
+    assert_eq!(p.crowdfund.get_campaign(&cid).status, CampaignStatus::Submitted);
+
+    // Admin approves → creates vote session (stays Submitted)
+    let session_id = p.crowdfund.approve_campaign(&cid, &1000, &1);
+    assert_eq!(p.crowdfund.get_campaign(&cid).status, CampaignStatus::Submitted);
+    assert_eq!(p.crowdfund.get_vote_session(&cid), session_id);
+
+    // Community votes
+    let voter = Address::generate(&p.env);
+    p.crowdfund.vote_campaign(&voter, &cid, &0);
+
+    // Check threshold → Campaigning
+    p.crowdfund.check_vote_threshold(&cid);
+    assert_eq!(p.crowdfund.get_campaign(&cid).status, CampaignStatus::Campaigning);
+}
+
+#[test]
+fn test_governance_rejection_flow() {
+    let p = setup_platform();
+    let owner = Address::generate(&p.env);
+
+    let cid = p.crowdfund.create_campaign(
+        &owner,
+        &String::from_str(&p.env, "Rejected campaign"),
+        &5_000i128,
+        &p.token_addr,
+        &(p.env.ledger().timestamp() + 86400),
+        &make_milestones(&p.env),
+        &100i128,
+    );
+
+    p.crowdfund.submit_for_review(&cid);
+
+    // Admin rejects → back to Draft
+    p.crowdfund.reject_campaign(&cid);
+    assert_eq!(p.crowdfund.get_campaign(&cid).status, CampaignStatus::Draft);
+
+    // Owner can resubmit
+    p.crowdfund.submit_for_review(&cid);
+    assert_eq!(p.crowdfund.get_campaign(&cid).status, CampaignStatus::Submitted);
 }

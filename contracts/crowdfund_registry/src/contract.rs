@@ -1,6 +1,7 @@
 use crate::error::Error;
 use crate::events::{
-    CampaignCancelled, CampaignCreated, CampaignFailed, CampaignFunded, CampaignTerminated,
+    CampaignApproved, CampaignCancelled, CampaignCreated, CampaignFailed, CampaignFunded,
+    CampaignRejected, CampaignSubmittedForReview, CampaignTerminated, CampaignValidated,
     MilestoneApproved, MilestoneDisputed, MilestoneOverdue, MilestoneSubmitted, PledgeRecorded,
     RefundBatchProcessed,
 };
@@ -10,6 +11,8 @@ use boundless_types::ttl::{
 };
 use boundless_types::ModuleType;
 use core_escrow::CoreEscrowClient;
+use governance_voting::storage::VoteContext;
+use governance_voting::GovernanceVotingClient;
 use reputation_registry::ReputationRegistryClient;
 use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, String, Vec};
 
@@ -29,6 +32,7 @@ impl CrowdfundRegistry {
         admin: Address,
         core_escrow: Address,
         reputation_registry: Address,
+        governance_voting: Address,
     ) -> Result<(), Error> {
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(Error::AlreadyInitialized);
@@ -41,6 +45,9 @@ impl CrowdfundRegistry {
         env.storage()
             .instance()
             .set(&DataKey::ReputationRegistry, &reputation_registry);
+        env.storage()
+            .instance()
+            .set(&DataKey::GovernanceVoting, &governance_voting);
         env.storage().instance().set(&DataKey::CampaignCount, &0u64);
         Self::extend_instance_ttl(&env);
         Ok(())
@@ -87,12 +94,21 @@ impl CrowdfundRegistry {
             .unwrap_or(0)
     }
 
+    pub fn get_vote_session(env: Env, campaign_id: u64) -> Result<BytesN<32>, Error> {
+        let campaign: Campaign = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Campaign(campaign_id))
+            .ok_or(Error::CampaignNotFound)?;
+        campaign.vote_session_id.ok_or(Error::NoVoteSession)
+    }
+
     // ========================================================================
-    // CAMPAIGN CREATION
+    // CAMPAIGN CREATION (starts in Draft)
     // ========================================================================
 
-    /// Create a campaign with decomposed milestones.
-    /// milestone_descs: Vec of (description, pct_bps) where pct_bps sums to 10000.
+    /// Create a campaign with decomposed milestones. Starts in Draft status.
+    /// Owner must call `submit_for_review` to advance to admin approval workflow.
     pub fn create_campaign(
         env: Env,
         owner: Address,
@@ -164,7 +180,7 @@ impl CrowdfundRegistry {
             id: count,
             owner: owner.clone(),
             metadata_cid,
-            status: CampaignStatus::Campaigning,
+            status: CampaignStatus::Draft,
             funding_goal,
             current_funding: 0,
             asset,
@@ -174,6 +190,7 @@ impl CrowdfundRegistry {
             min_pledge,
             backer_count: 0,
             refund_progress: 0,
+            vote_session_id: None,
         };
 
         let camp_key = DataKey::Campaign(count);
@@ -191,6 +208,165 @@ impl CrowdfundRegistry {
         .publish(&env);
 
         Ok(count)
+    }
+
+    // ========================================================================
+    // GOVERNANCE: APPROVAL WORKFLOW
+    // Draft → Submitted → Validated → Campaigning
+    // ========================================================================
+
+    /// Owner submits their draft campaign for admin review.
+    pub fn submit_for_review(env: Env, campaign_id: u64) -> Result<(), Error> {
+        let key = DataKey::Campaign(campaign_id);
+        let mut campaign: Campaign = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::CampaignNotFound)?;
+
+        campaign.owner.require_auth();
+
+        if campaign.status != CampaignStatus::Draft {
+            return Err(Error::NotDraft);
+        }
+
+        campaign.status = CampaignStatus::Submitted;
+        env.storage().persistent().set(&key, &campaign);
+
+        CampaignSubmittedForReview { id: campaign_id }.publish(&env);
+        Ok(())
+    }
+
+    /// Admin approves a submitted campaign. Creates a GovernanceVoting session
+    /// for community validation. Campaign moves to Validated once votes pass threshold.
+    pub fn approve_campaign(
+        env: Env,
+        campaign_id: u64,
+        voting_duration: u64,
+        vote_threshold: u32,
+    ) -> Result<BytesN<32>, Error> {
+        let admin = Self::require_admin(&env)?;
+        admin.require_auth();
+
+        let key = DataKey::Campaign(campaign_id);
+        let mut campaign: Campaign = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::CampaignNotFound)?;
+
+        if campaign.status != CampaignStatus::Submitted {
+            return Err(Error::NotSubmitted);
+        }
+
+        // Create a governance voting session for community validation
+        let gov_client = Self::gov_client(&env);
+
+        let mut options = Vec::new(&env);
+        options.push_back(String::from_str(&env, "Approve"));
+        options.push_back(String::from_str(&env, "Reject"));
+
+        let now = env.ledger().timestamp();
+        let session_id = gov_client.create_session(
+            &env.current_contract_address(),
+            &VoteContext::CampaignValidation,
+            &campaign_id,
+            &options,
+            &now,
+            &(now + voting_duration),
+            &Some(vote_threshold),
+            &None::<u32>,
+            &false,
+        );
+
+        campaign.vote_session_id = Some(session_id.clone());
+        campaign.status = CampaignStatus::Submitted; // stays Submitted until votes pass
+        env.storage().persistent().set(&key, &campaign);
+
+        CampaignApproved {
+            id: campaign_id,
+            vote_session_id: session_id.clone(),
+        }
+        .publish(&env);
+
+        Ok(session_id)
+    }
+
+    /// Admin rejects a submitted campaign. Returns to Draft so owner can revise.
+    pub fn reject_campaign(env: Env, campaign_id: u64) -> Result<(), Error> {
+        let admin = Self::require_admin(&env)?;
+        admin.require_auth();
+
+        let key = DataKey::Campaign(campaign_id);
+        let mut campaign: Campaign = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::CampaignNotFound)?;
+
+        if campaign.status != CampaignStatus::Submitted {
+            return Err(Error::NotSubmitted);
+        }
+
+        campaign.status = CampaignStatus::Draft;
+        campaign.vote_session_id = None;
+        env.storage().persistent().set(&key, &campaign);
+
+        CampaignRejected { id: campaign_id }.publish(&env);
+        Ok(())
+    }
+
+    /// Delegates vote to GovernanceVoting. Anyone can vote on an approved campaign's session.
+    pub fn vote_campaign(
+        env: Env,
+        voter: Address,
+        campaign_id: u64,
+        option_id: u32,
+    ) -> Result<(), Error> {
+        voter.require_auth();
+
+        let campaign: Campaign = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Campaign(campaign_id))
+            .ok_or(Error::CampaignNotFound)?;
+
+        let session_id = campaign.vote_session_id.ok_or(Error::NoVoteSession)?;
+
+        let gov_client = Self::gov_client(&env);
+        gov_client.cast_vote(&voter, &session_id, &option_id);
+
+        Ok(())
+    }
+
+    /// Permissionless: checks if the voting threshold has been reached.
+    /// If yes, transitions campaign from Submitted → Campaigning.
+    pub fn check_vote_threshold(env: Env, campaign_id: u64) -> Result<(), Error> {
+        let key = DataKey::Campaign(campaign_id);
+        let mut campaign: Campaign = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::CampaignNotFound)?;
+
+        if campaign.status != CampaignStatus::Submitted {
+            return Err(Error::NotSubmitted);
+        }
+
+        let session_id = campaign.vote_session_id.clone().ok_or(Error::NoVoteSession)?;
+
+        let gov_client = Self::gov_client(&env);
+        let reached = gov_client.threshold_reached(&session_id);
+
+        if !reached {
+            return Err(Error::VoteThresholdNotMet);
+        }
+
+        campaign.status = CampaignStatus::Campaigning;
+        env.storage().persistent().set(&key, &campaign);
+
+        CampaignValidated { id: campaign_id }.publish(&env);
+        Ok(())
     }
 
     // ========================================================================
@@ -711,5 +887,14 @@ impl CrowdfundRegistry {
             .get(&DataKey::ReputationRegistry)
             .expect("not initialized");
         ReputationRegistryClient::new(env, &addr)
+    }
+
+    fn gov_client(env: &Env) -> GovernanceVotingClient<'_> {
+        let addr: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::GovernanceVoting)
+            .expect("not initialized");
+        GovernanceVotingClient::new(env, &addr)
     }
 }

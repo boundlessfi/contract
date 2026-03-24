@@ -3,6 +3,9 @@ use soroban_sdk::{contracttype, Address, BytesN, String};
 #[contracttype]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CampaignStatus {
+    Draft,
+    Submitted,
+    Validated,
     Campaigning,
     Funded,
     Executing,
@@ -47,6 +50,7 @@ pub struct Campaign {
     pub min_pledge: i128,
     pub backer_count: u32,
     pub refund_progress: u32,
+    pub vote_session_id: Option<BytesN<32>>,
 }
 
 #[contracttype]
@@ -55,6 +59,7 @@ pub enum DataKey {
     Admin,
     CoreEscrow,
     ReputationRegistry,
+    GovernanceVoting,
     CampaignCount,
     Campaign(u64),
     // Decomposed milestones: no Vec in Campaign struct

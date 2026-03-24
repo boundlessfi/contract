@@ -1,4 +1,4 @@
-use soroban_sdk::{contractevent, Address};
+use soroban_sdk::{contractevent, Address, BytesN};
 
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -87,4 +87,33 @@ pub struct MilestoneOverdue {
     #[topic]
     pub campaign_id: u64,
     pub milestone_id: u32,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CampaignSubmittedForReview {
+    #[topic]
+    pub id: u64,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CampaignApproved {
+    #[topic]
+    pub id: u64,
+    pub vote_session_id: BytesN<32>,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CampaignRejected {
+    #[topic]
+    pub id: u64,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CampaignValidated {
+    #[topic]
+    pub id: u64,
 }

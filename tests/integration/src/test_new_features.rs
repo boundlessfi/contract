@@ -6,7 +6,7 @@
 /// - GrantHub: cancel_grant
 /// - CoreEscrow: route_payout, route_refund
 /// - ReputationRegistry: next_recharge_at, record_fraud, add_community_bonus, meets_skill_requirements
-use crate::setup::setup_platform;
+use crate::setup::{setup_platform, Platform};
 use bounty_registry::storage::{BountyStatus, BountyType};
 use boundless_types::ActivityCategory;
 use crowdfund_registry::storage::{CampaignStatus, MilestoneStatus};
@@ -204,6 +204,15 @@ fn make_milestones(env: &soroban_sdk::Env) -> Vec<(String, u32)> {
     ms
 }
 
+/// Helper: advance a campaign from Draft → Campaigning via governance flow
+fn advance_to_campaigning(p: &Platform, campaign_id: u64) {
+    p.crowdfund.submit_for_review(&campaign_id);
+    p.crowdfund.approve_campaign(&campaign_id, &1000, &1);
+    let voter = Address::generate(&p.env);
+    p.crowdfund.vote_campaign(&voter, &campaign_id, &0);
+    p.crowdfund.check_vote_threshold(&campaign_id);
+}
+
 #[test]
 fn test_dispute_milestone() {
     let p = setup_platform();
@@ -220,6 +229,8 @@ fn test_dispute_milestone() {
         &make_milestones(&p.env),
         &100i128,
     );
+
+    advance_to_campaigning(&p, cid);
 
     // Fund it
     p.crowdfund.pledge(&backer, &cid, &3_000);
@@ -259,6 +270,8 @@ fn test_dispute_milestone_non_backer_rejected() {
         &100i128,
     );
 
+    advance_to_campaigning(&p, cid);
+
     p.crowdfund.pledge(&backer, &cid, &3_000);
     p.crowdfund.submit_milestone(&cid, &0);
 
@@ -282,6 +295,8 @@ fn test_terminate_campaign() {
         &make_milestones(&p.env),
         &100i128,
     );
+
+    advance_to_campaigning(&p, cid);
 
     p.crowdfund.pledge(&backer, &cid, &1_000);
     let backer_balance = p.token.balance(&backer);
@@ -313,6 +328,8 @@ fn test_flag_overdue_milestone() {
         &make_milestones(&p.env),
         &100i128,
     );
+
+    advance_to_campaigning(&p, cid);
 
     // Fund it
     p.crowdfund.pledge(&backer, &cid, &3_000);
@@ -346,6 +363,8 @@ fn test_flag_overdue_too_early() {
         &make_milestones(&p.env),
         &100i128,
     );
+
+    advance_to_campaigning(&p, cid);
 
     p.crowdfund.pledge(&backer, &cid, &3_000);
 
