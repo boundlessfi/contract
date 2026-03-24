@@ -4,14 +4,14 @@ mod setup;
 #[cfg(test)]
 mod test_bounty_e2e;
 #[cfg(test)]
+mod test_cross_module;
+#[cfg(test)]
 mod test_crowdfund_e2e;
+#[cfg(test)]
+mod test_edge_cases;
 #[cfg(test)]
 mod test_grant_e2e;
 #[cfg(test)]
 mod test_hackathon_e2e;
 #[cfg(test)]
-mod test_cross_module;
-#[cfg(test)]
 mod test_new_features;
-#[cfg(test)]
-mod test_edge_cases;

@@ -80,10 +80,10 @@ pub struct FeeConfig {
 impl FeeConfig {
     pub fn default_config() -> Self {
         FeeConfig {
-            bounty_fee_bps: 500,    // 5%
-            crowdfund_fee_bps: 500, // 5%
-            grant_fee_bps: 300,     // 3%
-            hackathon_fee_bps: 400, // 4%
+            bounty_fee_bps: 500,     // 5%
+            crowdfund_fee_bps: 500,  // 5%
+            grant_fee_bps: 300,      // 3%
+            hackathon_fee_bps: 400,  // 4%
             insurance_cut_bps: 1000, // 10% of fee
         }
     }

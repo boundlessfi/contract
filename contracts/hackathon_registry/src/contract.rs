@@ -1,4 +1,6 @@
-use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, IntoVal, String, Symbol, Val, Vec};
+use soroban_sdk::{
+    contract, contractimpl, Address, BytesN, Env, IntoVal, String, Symbol, Val, Vec,
+};
 
 use boundless_types::ttl::{
     INSTANCE_TTL_EXTEND, INSTANCE_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND, PERSISTENT_TTL_THRESHOLD,
@@ -68,9 +70,7 @@ impl HackathonRegistry {
     ) -> Result<u64, Error> {
         creator.require_auth();
 
-        if registration_deadline >= submission_deadline
-            || submission_deadline >= judging_deadline
-        {
+        if registration_deadline >= submission_deadline || submission_deadline >= judging_deadline {
             return Err(Error::InvalidDeadlines);
         }
 
@@ -110,8 +110,7 @@ impl HackathonRegistry {
             env.invoke_contract(&escrow_addr, &sym(&env, "create_pool"), pool_args);
 
         // Lock the pool immediately
-        let lock_args: Vec<Val> =
-            Vec::from_array(&env, [pool_id.clone().into_val(&env)]);
+        let lock_args: Vec<Val> = Vec::from_array(&env, [pool_id.clone().into_val(&env)]);
         env.invoke_contract::<()>(&escrow_addr, &sym(&env, "lock_pool"), lock_args);
 
         // Store prize tiers decomposed
@@ -140,17 +139,11 @@ impl HackathonRegistry {
         };
 
         let hack_key = DataKey::Hackathon(count);
-        env.storage()
-            .persistent()
-            .set(&hack_key, &hackathon);
+        env.storage().persistent().set(&hack_key, &hackathon);
         Self::extend_persistent_ttl(&env, &hack_key);
         Self::extend_instance_ttl(&env);
 
-        HackathonCreated {
-            id: count,
-            creator,
-        }
-        .publish(&env);
+        HackathonCreated { id: count, creator }.publish(&env);
 
         Ok(count)
     }
@@ -271,18 +264,18 @@ impl HackathonRegistry {
         };
 
         let idx = hackathon.submission_count;
-        env.storage()
-            .persistent()
-            .set(&DataKey::Submission(hackathon_id, team_lead.clone()), &submission);
-        env.storage()
-            .persistent()
-            .set(&DataKey::SubmissionIndex(hackathon_id, idx), &team_lead.clone());
+        env.storage().persistent().set(
+            &DataKey::Submission(hackathon_id, team_lead.clone()),
+            &submission,
+        );
+        env.storage().persistent().set(
+            &DataKey::SubmissionIndex(hackathon_id, idx),
+            &team_lead.clone(),
+        );
 
         hackathon.submission_count += 1;
         let hack_key = DataKey::Hackathon(hackathon_id);
-        env.storage()
-            .persistent()
-            .set(&hack_key, &hackathon);
+        env.storage().persistent().set(&hack_key, &hackathon);
         Self::extend_persistent_ttl(&env, &hack_key);
         Self::extend_instance_ttl(&env);
 
@@ -512,7 +505,8 @@ impl HackathonRegistry {
                 .get(&DataKey::PrizeTier(hackathon_id, rank))
                 .unwrap();
 
-            let amount = hackathon.prize_pool
+            let amount = hackathon
+                .prize_pool
                 .checked_mul(pct as i128)
                 .ok_or(Error::Overflow)?
                 / 10000;
@@ -550,11 +544,7 @@ impl HackathonRegistry {
                     is_win.into_val(&env),
                 ],
             );
-            env.invoke_contract::<()>(
-                &rep_addr,
-                &sym(&env, "record_hackathon_result"),
-                rep_args,
-            );
+            env.invoke_contract::<()>(&rep_addr, &sym(&env, "record_hackathon_result"), rep_args);
         }
 
         hackathon.status = HackathonStatus::Completed;
@@ -689,8 +679,7 @@ impl HackathonRegistry {
         let pool_id: BytesN<32> =
             env.invoke_contract(&escrow_addr, &sym(&env, "create_pool"), pool_args);
 
-        let lock_args: Vec<Val> =
-            Vec::from_array(&env, [pool_id.clone().into_val(&env)]);
+        let lock_args: Vec<Val> = Vec::from_array(&env, [pool_id.clone().into_val(&env)]);
         env.invoke_contract::<()>(&escrow_addr, &sym(&env, "lock_pool"), lock_args);
 
         let track = SponsoredTrack {
@@ -791,11 +780,7 @@ impl HackathonRegistry {
                     is_win.into_val(&env),
                 ],
             );
-            env.invoke_contract::<()>(
-                &rep_addr,
-                &sym(&env, "record_hackathon_result"),
-                rep_args,
-            );
+            env.invoke_contract::<()>(&rep_addr, &sym(&env, "record_hackathon_result"), rep_args);
         }
 
         TrackPrizesDistributed {
@@ -823,7 +808,11 @@ impl HackathonRegistry {
         Ok(hackathon)
     }
 
-    pub fn get_submission(env: Env, hackathon_id: u64, team_lead: Address) -> Result<Submission, Error> {
+    pub fn get_submission(
+        env: Env,
+        hackathon_id: u64,
+        team_lead: Address,
+    ) -> Result<Submission, Error> {
         env.storage()
             .persistent()
             .get(&DataKey::Submission(hackathon_id, team_lead))

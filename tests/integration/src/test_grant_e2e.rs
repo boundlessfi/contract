@@ -18,13 +18,9 @@ fn test_milestone_grant_full_lifecycle() {
     descs.push_back((String::from_str(&p.env, "Phase 1"), 6000));
     descs.push_back((String::from_str(&p.env, "Phase 2"), 4000));
 
-    let gid = p.grant.create_milestone_grant(
-        &creator,
-        &recipient,
-        &20_000,
-        &p.token_addr,
-        &descs,
-    );
+    let gid = p
+        .grant
+        .create_milestone_grant(&creator, &recipient, &20_000, &p.token_addr, &descs);
 
     // Verify grant created
     let grant = p.grant.get_grant(&gid);
@@ -42,7 +38,10 @@ fn test_milestone_grant_full_lifecycle() {
 
     // Submit and approve milestone 0
     p.grant.submit_grant_milestone(&recipient, &gid, &0);
-    assert_eq!(p.grant.get_milestone(&gid, &0).status, MilestoneStatus::Submitted);
+    assert_eq!(
+        p.grant.get_milestone(&gid, &0).status,
+        MilestoneStatus::Submitted
+    );
 
     p.grant.approve_grant_milestone(&gid, &0);
     assert_eq!(p.token.balance(&recipient), 12_000); // 60% of 20k
@@ -185,13 +184,9 @@ fn test_milestone_grant_escrow_pool() {
     let mut descs: Vec<(String, u32)> = Vec::new(&p.env);
     descs.push_back((String::from_str(&p.env, "All"), 10000));
 
-    let gid = p.grant.create_milestone_grant(
-        &creator,
-        &recipient,
-        &10_000,
-        &p.token_addr,
-        &descs,
-    );
+    let gid = p
+        .grant
+        .create_milestone_grant(&creator, &recipient, &10_000, &p.token_addr, &descs);
 
     // Verify full amount deposited to escrow
     assert_eq!(p.token.balance(&p.escrow_addr), 10_000);

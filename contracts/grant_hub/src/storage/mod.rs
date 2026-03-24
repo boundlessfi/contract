@@ -90,8 +90,8 @@ pub enum DataKey {
     GovernanceVoting,
     GrantCount,
     Grant(u64),
-    GrantMilestone(u64, u32),  // grant_id, milestone_index
-    GrantRecipient(u64),       // grant_id -> Address (milestone grant recipient)
-    QFRound(u64),              // grant_id -> QFRoundData
-    RetroSession(u64),         // grant_id -> BytesN<32>
+    GrantMilestone(u64, u32), // grant_id, milestone_index
+    GrantRecipient(u64),      // grant_id -> Address (milestone grant recipient)
+    QFRound(u64),             // grant_id -> QFRoundData
+    RetroSession(u64),        // grant_id -> BytesN<32>
 }

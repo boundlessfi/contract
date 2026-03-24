@@ -1,8 +1,8 @@
 /// End-to-end bounty tests across CoreEscrow + ReputationRegistry + BountyRegistry.
 /// Tests all 4 bounty sub-types through their full lifecycle.
 use crate::setup::setup_platform;
-use bounty_registry::storage::{ApplicationStatus, BountyStatus, BountyType};
 use boundless_types::ActivityCategory;
+use bounty_registry::storage::{ApplicationStatus, BountyStatus, BountyType};
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{Address, String};
 
@@ -81,9 +81,12 @@ fn test_application_flow_with_credit_restore() {
     );
 
     // All 3 apply (each spends 1 credit: 3 → 2)
-    p.bounty.apply(&app1, &bounty_id, &String::from_str(&p.env, "Proposal A"));
-    p.bounty.apply(&app2, &bounty_id, &String::from_str(&p.env, "Proposal B"));
-    p.bounty.apply(&app3, &bounty_id, &String::from_str(&p.env, "Proposal C"));
+    p.bounty
+        .apply(&app1, &bounty_id, &String::from_str(&p.env, "Proposal A"));
+    p.bounty
+        .apply(&app2, &bounty_id, &String::from_str(&p.env, "Proposal B"));
+    p.bounty
+        .apply(&app3, &bounty_id, &String::from_str(&p.env, "Proposal C"));
     assert_eq!(p.reputation.get_credits(&app1), 2);
     assert_eq!(p.reputation.get_credits(&app2), 2);
     assert_eq!(p.reputation.get_credits(&app3), 2);
@@ -95,7 +98,8 @@ fn test_application_flow_with_credit_restore() {
     assert_eq!(p.reputation.get_credits(&app1), 2); // selected, not restored
 
     // app1 submits and gets approved
-    p.bounty.submit_work(&app1, &bounty_id, &String::from_str(&p.env, "QmWork"));
+    p.bounty
+        .submit_work(&app1, &bounty_id, &String::from_str(&p.env, "QmWork"));
     p.bounty.approve_submission(&creator, &bounty_id, &90);
 
     let bounty = p.bounty.get_bounty(&bounty_id);
@@ -131,15 +135,22 @@ fn test_contest_multi_winner() {
     assert!(p.escrow.is_locked(&bounty.escrow_pool_id));
 
     // Submit work
-    p.bounty.submit_work(&sub1, &bounty_id, &String::from_str(&p.env, "QmW1"));
-    p.bounty.submit_work(&sub2, &bounty_id, &String::from_str(&p.env, "QmW2"));
+    p.bounty
+        .submit_work(&sub1, &bounty_id, &String::from_str(&p.env, "QmW1"));
+    p.bounty
+        .submit_work(&sub2, &bounty_id, &String::from_str(&p.env, "QmW2"));
 
     // Pick winners with split prizes
-    p.bounty.approve_contest_winner(&creator, &bounty_id, &sub1, &6000, &90);
-    p.bounty.approve_contest_winner(&creator, &bounty_id, &sub2, &4000, &70);
+    p.bounty
+        .approve_contest_winner(&creator, &bounty_id, &sub1, &6000, &90);
+    p.bounty
+        .approve_contest_winner(&creator, &bounty_id, &sub2, &4000, &70);
     p.bounty.finalize_contest(&creator, &bounty_id);
 
-    assert_eq!(p.bounty.get_bounty(&bounty_id).status, BountyStatus::Completed);
+    assert_eq!(
+        p.bounty.get_bounty(&bounty_id).status,
+        BountyStatus::Completed
+    );
     assert_eq!(p.token.balance(&sub1), 6000);
     assert_eq!(p.token.balance(&sub2), 4000);
 
@@ -211,7 +222,11 @@ fn test_cancel_bounty_refunds_escrow_and_credits() {
     let creator_balance_after_create = p.token.balance(&creator);
 
     // Applicant applies (credit spent: 3 → 2)
-    p.bounty.apply(&applicant, &bounty_id, &String::from_str(&p.env, "Proposal"));
+    p.bounty.apply(
+        &applicant,
+        &bounty_id,
+        &String::from_str(&p.env, "Proposal"),
+    );
     assert_eq!(p.reputation.get_credits(&applicant), 2);
 
     // Cancel bounty
@@ -224,7 +239,10 @@ fn test_cancel_bounty_refunds_escrow_and_credits() {
     assert!(p.token.balance(&creator) > creator_balance_after_create);
 
     // Status is cancelled
-    assert_eq!(p.bounty.get_bounty(&bounty_id).status, BountyStatus::Cancelled);
+    assert_eq!(
+        p.bounty.get_bounty(&bounty_id).status,
+        BountyStatus::Cancelled
+    );
 }
 
 #[test]
@@ -247,10 +265,12 @@ fn test_reject_application_restores_credit() {
         &(p.env.ledger().timestamp() + 86400),
     );
 
-    p.bounty.apply(&applicant, &bounty_id, &String::from_str(&p.env, "Prop"));
+    p.bounty
+        .apply(&applicant, &bounty_id, &String::from_str(&p.env, "Prop"));
     assert_eq!(p.reputation.get_credits(&applicant), 2);
 
-    p.bounty.reject_application(&creator, &bounty_id, &applicant);
+    p.bounty
+        .reject_application(&creator, &bounty_id, &applicant);
     assert_eq!(p.reputation.get_credits(&applicant), 3);
 
     let app = p.bounty.get_application(&bounty_id, &applicant);

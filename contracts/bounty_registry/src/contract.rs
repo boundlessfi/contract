@@ -1,16 +1,16 @@
 use crate::error::Error;
 use crate::events::{
-    ApplicationRejected, BountyApplied, BountyCancelled, BountyClaimed, BountyAssigned,
+    ApplicationRejected, BountyApplied, BountyAssigned, BountyCancelled, BountyClaimed,
     BountyCreated, SplitApproved, SubmissionApproved, WorkSubmitted,
 };
-use crate::storage::{
-    Application, ApplicationStatus, Bounty, BountyStatus, BountyType, DataKey,
-};
+use crate::storage::{Application, ApplicationStatus, Bounty, BountyStatus, BountyType, DataKey};
 use boundless_types::ttl::{
     INSTANCE_TTL_EXTEND, INSTANCE_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND, PERSISTENT_TTL_THRESHOLD,
 };
 use boundless_types::{ActivityCategory, ModuleType};
-use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, IntoVal, String, Symbol, Val, Vec};
+use soroban_sdk::{
+    contract, contractimpl, Address, BytesN, Env, IntoVal, String, Symbol, Val, Vec,
+};
 
 fn sym(env: &Env, name: &str) -> Symbol {
     Symbol::new(env, name)
@@ -132,8 +132,7 @@ impl BountyRegistry {
 
         // Contest and Split bounties lock the pool immediately
         if bounty_type == BountyType::Contest || bounty_type == BountyType::Split {
-            let lock_args: Vec<Val> =
-                Vec::from_array(&env, [pool_id.clone().into_val(&env)]);
+            let lock_args: Vec<Val> = Vec::from_array(&env, [pool_id.clone().into_val(&env)]);
             env.invoke_contract::<()>(&escrow_addr, &sym(&env, "lock_pool"), lock_args);
         }
 
@@ -155,9 +154,7 @@ impl BountyRegistry {
         };
 
         let key = DataKey::Bounty(count);
-        env.storage()
-            .persistent()
-            .set(&key, &bounty);
+        env.storage().persistent().set(&key, &bounty);
         Self::extend_persistent_ttl(&env, &key);
         Self::extend_instance_ttl(&env);
 
@@ -199,7 +196,10 @@ impl BountyRegistry {
         let contract_addr = env.current_contract_address();
         let spend_args: Vec<Val> = Vec::from_array(
             &env,
-            [contract_addr.into_val(&env), contributor.clone().into_val(&env)],
+            [
+                contract_addr.into_val(&env),
+                contributor.clone().into_val(&env),
+            ],
         );
         let had_credit: bool =
             env.invoke_contract(&rep_addr, &sym(&env, "spend_credit"), spend_args);
@@ -305,11 +305,7 @@ impl BountyRegistry {
         bounty.winner_count = 1;
         env.storage().persistent().set(&key, &bounty);
 
-        SubmissionApproved {
-            bounty_id,
-            winner,
-        }
-        .publish(&env);
+        SubmissionApproved { bounty_id, winner }.publish(&env);
 
         Ok(())
     }
@@ -352,7 +348,10 @@ impl BountyRegistry {
         let contract_addr = env.current_contract_address();
         let spend_args: Vec<Val> = Vec::from_array(
             &env,
-            [contract_addr.into_val(&env), applicant.clone().into_val(&env)],
+            [
+                contract_addr.into_val(&env),
+                applicant.clone().into_val(&env),
+            ],
         );
         let had_credit: bool =
             env.invoke_contract(&rep_addr, &sym(&env, "spend_credit"), spend_args);
@@ -466,7 +465,10 @@ impl BountyRegistry {
                 if addr != applicant {
                     let restore_args: Vec<Val> = Vec::from_array(
                         &env,
-                        [contract_addr.clone().into_val(&env), addr.clone().into_val(&env)],
+                        [
+                            contract_addr.clone().into_val(&env),
+                            addr.clone().into_val(&env),
+                        ],
                     );
                     env.invoke_contract::<()>(
                         &rep_addr,
@@ -475,10 +477,8 @@ impl BountyRegistry {
                     );
                     // Mark rejected
                     let other_key = DataKey::Application(bounty_id, addr);
-                    if let Some(mut other_app) = env
-                        .storage()
-                        .persistent()
-                        .get::<_, Application>(&other_key)
+                    if let Some(mut other_app) =
+                        env.storage().persistent().get::<_, Application>(&other_key)
                     {
                         other_app.status = ApplicationStatus::Rejected;
                         env.storage().persistent().set(&other_key, &other_app);
@@ -628,11 +628,7 @@ impl BountyRegistry {
         bounty.winner_count = 1;
         env.storage().persistent().set(&key, &bounty);
 
-        SubmissionApproved {
-            bounty_id,
-            winner,
-        }
-        .publish(&env);
+        SubmissionApproved { bounty_id, winner }.publish(&env);
 
         Ok(())
     }
@@ -714,20 +710,12 @@ impl BountyRegistry {
         bounty.status = BountyStatus::InProgress;
         env.storage().persistent().set(&key, &bounty);
 
-        SubmissionApproved {
-            bounty_id,
-            winner,
-        }
-        .publish(&env);
+        SubmissionApproved { bounty_id, winner }.publish(&env);
 
         Ok(())
     }
 
-    pub fn finalize_contest(
-        env: Env,
-        creator: Address,
-        bounty_id: u64,
-    ) -> Result<(), Error> {
+    pub fn finalize_contest(env: Env, creator: Address, bounty_id: u64) -> Result<(), Error> {
         creator.require_auth();
 
         let key = DataKey::Bounty(bounty_id);
@@ -1002,11 +990,7 @@ impl BountyRegistry {
                     &env,
                     [contract_addr.clone().into_val(&env), addr.into_val(&env)],
                 );
-                env.invoke_contract::<()>(
-                    &rep_addr,
-                    &sym(&env, "restore_credit"),
-                    restore_args,
-                );
+                env.invoke_contract::<()>(&rep_addr, &sym(&env, "restore_credit"), restore_args);
             }
         }
 

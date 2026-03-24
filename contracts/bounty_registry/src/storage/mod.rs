@@ -67,6 +67,6 @@ pub enum DataKey {
     Application(u64, Address),
     // Track applicant list per bounty for credit restoration
     ApplicantCount(u64),
-    Applicant(u64, u32),        // bounty_id, index -> Address
-    SplitRecipient(u64, u32),   // bounty_id, slot_index -> Address
+    Applicant(u64, u32),      // bounty_id, index -> Address
+    SplitRecipient(u64, u32), // bounty_id, slot_index -> Address
 }

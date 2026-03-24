@@ -1,4 +1,6 @@
-use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, IntoVal, String, Symbol, Val, Vec};
+use soroban_sdk::{
+    contract, contractimpl, Address, BytesN, Env, IntoVal, String, Symbol, Val, Vec,
+};
 
 use boundless_types::ttl::{
     INSTANCE_TTL_EXTEND, INSTANCE_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND, PERSISTENT_TTL_THRESHOLD,
@@ -6,7 +8,9 @@ use boundless_types::ttl::{
 use boundless_types::ModuleType;
 
 use crate::error::Error;
-use crate::events::{GrantCompleted, GrantCreated, MilestoneApproved, MilestoneSubmitted, QFDonationMade};
+use crate::events::{
+    GrantCompleted, GrantCreated, MilestoneApproved, MilestoneSubmitted, QFDonationMade,
+};
 use crate::storage::{
     DataKey, Grant, GrantMilestone, GrantStatus, GrantType, MilestoneStatus, QFRoundData,
     VoteContext, VoteOption,
@@ -142,21 +146,15 @@ impl GrantHub {
         let mut slots: Vec<(Address, i128)> = Vec::new(&env);
         let milestone_count = milestone_descs.len();
         for (_, pct) in milestone_descs.iter() {
-            let slot_amount = amount
-                .checked_mul(pct as i128)
-                .ok_or(Error::Overflow)?
-                / 10000;
+            let slot_amount = amount.checked_mul(pct as i128).ok_or(Error::Overflow)? / 10000;
             slots.push_back((recipient.clone(), slot_amount));
         }
 
-        let slot_args: Vec<Val> = Vec::from_array(
-            &env,
-            [pool_id.clone().into_val(&env), slots.into_val(&env)],
-        );
+        let slot_args: Vec<Val> =
+            Vec::from_array(&env, [pool_id.clone().into_val(&env), slots.into_val(&env)]);
         env.invoke_contract::<()>(&escrow_addr, &sym(&env, "define_release_slots"), slot_args);
 
-        let lock_args: Vec<Val> =
-            Vec::from_array(&env, [pool_id.clone().into_val(&env)]);
+        let lock_args: Vec<Val> = Vec::from_array(&env, [pool_id.clone().into_val(&env)]);
         env.invoke_contract::<()>(&escrow_addr, &sym(&env, "lock_pool"), lock_args);
 
         // Store milestones decomposed
@@ -383,8 +381,7 @@ impl GrantHub {
         let pool_id: BytesN<32> =
             env.invoke_contract(&escrow_addr, &sym(&env, "create_pool"), pool_args);
 
-        let lock_args: Vec<Val> =
-            Vec::from_array(&env, [pool_id.clone().into_val(&env)]);
+        let lock_args: Vec<Val> = Vec::from_array(&env, [pool_id.clone().into_val(&env)]);
         env.invoke_contract::<()>(&escrow_addr, &sym(&env, "lock_pool"), lock_args);
 
         // Create governance voting session
@@ -469,8 +466,7 @@ impl GrantHub {
 
         // Get voting results
         let gov_addr = Self::get_gov_addr(&env);
-        let result_args: Vec<Val> =
-            Vec::from_array(&env, [session_id.into_val(&env)]);
+        let result_args: Vec<Val> = Vec::from_array(&env, [session_id.into_val(&env)]);
         let results: Vec<VoteOption> =
             env.invoke_contract(&gov_addr, &sym(&env, "get_result"), result_args);
 
@@ -485,12 +481,14 @@ impl GrantHub {
         if total_votes > 0 {
             for (i, opt) in results.iter().enumerate() {
                 if opt.weighted_votes > 0 && (i as u32) < recipients.len() {
-                    let share = grant.amount
+                    let share = grant
+                        .amount
                         .checked_mul(opt.weighted_votes as i128)
                         .ok_or(Error::Overflow)?
                         / total_votes as i128;
                     if share > 0 {
-                        let recipient = recipients.get(i as u32).ok_or(Error::InvalidProjectIndex)?;
+                        let recipient =
+                            recipients.get(i as u32).ok_or(Error::InvalidProjectIndex)?;
 
                         let release_args: Vec<Val> = Vec::from_array(
                             &env,
@@ -569,8 +567,7 @@ impl GrantHub {
         let pool_id: BytesN<32> =
             env.invoke_contract(&escrow_addr, &sym(&env, "create_pool"), pool_args);
 
-        let lock_args: Vec<Val> =
-            Vec::from_array(&env, [pool_id.clone().into_val(&env)]);
+        let lock_args: Vec<Val> = Vec::from_array(&env, [pool_id.clone().into_val(&env)]);
         env.invoke_contract::<()>(&escrow_addr, &sym(&env, "lock_pool"), lock_args);
 
         // Create QF session
@@ -716,18 +713,17 @@ impl GrantHub {
                 qf_data.matching_pool.into_val(&env),
             ],
         );
-        let distributions: Vec<(u32, i128)> = env.invoke_contract(
-            &gov_addr,
-            &sym(&env, "compute_qf_distribution"),
-            dist_args,
-        );
+        let distributions: Vec<(u32, i128)> =
+            env.invoke_contract(&gov_addr, &sym(&env, "compute_qf_distribution"), dist_args);
 
         let escrow_addr = Self::get_escrow_addr(&env);
         let rep_addr = Self::get_rep_addr(&env);
 
         for (index, amount) in distributions.iter() {
             if amount > 0 {
-                let addr = project_addresses.get(index).ok_or(Error::InvalidProjectIndex)?;
+                let addr = project_addresses
+                    .get(index)
+                    .ok_or(Error::InvalidProjectIndex)?;
 
                 let release_args: Vec<Val> = Vec::from_array(
                     &env,
@@ -751,11 +747,7 @@ impl GrantHub {
                         amount.into_val(&env),
                     ],
                 );
-                env.invoke_contract::<()>(
-                    &rep_addr,
-                    &sym(&env, "record_grant_received"),
-                    rep_args,
-                );
+                env.invoke_contract::<()>(&rep_addr, &sym(&env, "record_grant_received"), rep_args);
             }
         }
 
@@ -790,8 +782,7 @@ impl GrantHub {
         }
 
         let escrow_addr = Self::get_escrow_addr(&env);
-        let args: Vec<Val> =
-            Vec::from_array(&env, [grant.pool_id.into_val(&env)]);
+        let args: Vec<Val> = Vec::from_array(&env, [grant.pool_id.into_val(&env)]);
         env.invoke_contract::<()>(&escrow_addr, &sym(&env, "refund_all"), args);
 
         grant.status = GrantStatus::Cancelled;

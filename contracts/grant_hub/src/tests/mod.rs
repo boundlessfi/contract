@@ -124,7 +124,8 @@ fn test_milestone_grant_lifecycle() {
     assert_eq!(m1.status, MilestoneStatus::Pending);
 
     // Submit first milestone
-    t.hub_client.submit_grant_milestone(&recipient, &grant_id, &0);
+    t.hub_client
+        .submit_grant_milestone(&recipient, &grant_id, &0);
 
     let m0_after = t.hub_client.get_milestone(&grant_id, &0);
     assert_eq!(m0_after.status, MilestoneStatus::Submitted);
@@ -139,7 +140,8 @@ fn test_milestone_grant_lifecycle() {
     assert_eq!(grant_after.status, GrantStatus::Executing);
 
     // Submit and approve second milestone
-    t.hub_client.submit_grant_milestone(&recipient, &grant_id, &1);
+    t.hub_client
+        .submit_grant_milestone(&recipient, &grant_id, &1);
     t.hub_client.approve_grant_milestone(&grant_id, &1);
 
     // 100% released
@@ -250,7 +252,8 @@ fn test_qf_round() {
     project_addresses.push_back(p1.clone());
     project_addresses.push_back(p2.clone());
 
-    t.hub_client.finalize_qf_round(&grant_id, &project_addresses);
+    t.hub_client
+        .finalize_qf_round(&grant_id, &project_addresses);
 
     let final_grant = t.hub_client.get_grant(&grant_id);
     assert_eq!(final_grant.status, GrantStatus::Completed);

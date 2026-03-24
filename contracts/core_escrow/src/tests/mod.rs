@@ -313,8 +313,7 @@ fn test_pause_resume_routing() {
 
     client.pause_routing();
 
-    let result =
-        client.try_route_deposit(&owner, &pool_id, &10_000, &token, &SubType::BountyFCFS);
+    let result = client.try_route_deposit(&owner, &pool_id, &10_000, &token, &SubType::BountyFCFS);
     assert!(result.is_err());
 
     client.resume_routing();

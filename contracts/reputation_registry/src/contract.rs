@@ -72,20 +72,14 @@ impl ReputationRegistry {
         // Initialize credits
         let credit_key = DataKey::CreditData(contributor);
         let credits = CreditData::new(now);
-        env.storage()
-            .persistent()
-            .set(&credit_key, &credits);
+        env.storage().persistent().set(&credit_key, &credits);
         Self::extend_persistent_ttl(&env, &credit_key);
         Self::extend_instance_ttl(&env);
 
         Ok(())
     }
 
-    pub fn set_profile_metadata(
-        env: Env,
-        contributor: Address,
-        cid: String,
-    ) -> Result<(), Error> {
+    pub fn set_profile_metadata(env: Env, contributor: Address, cid: String) -> Result<(), Error> {
         contributor.require_auth();
         let key = DataKey::Profile(contributor);
         let mut profile: ContributorProfile = env
@@ -162,7 +156,11 @@ impl ReputationRegistry {
         env.storage()
             .instance()
             .set(&DataKey::AuthorizedModule(module.clone()), &true);
-        ModuleAuthorized { module, authorized: true }.publish(&env);
+        ModuleAuthorized {
+            module,
+            authorized: true,
+        }
+        .publish(&env);
         Ok(())
     }
 
@@ -172,7 +170,11 @@ impl ReputationRegistry {
         env.storage()
             .instance()
             .remove(&DataKey::AuthorizedModule(module.clone()));
-        ModuleAuthorized { module, authorized: false }.publish(&env);
+        ModuleAuthorized {
+            module,
+            authorized: false,
+        }
+        .publish(&env);
         Ok(())
     }
 
@@ -203,7 +205,12 @@ impl ReputationRegistry {
         Self::extend_persistent_ttl(&env, &key);
         Self::extend_instance_ttl(&env);
 
-        ScoreUpdated { contributor: contributor.clone(), overall_score: profile.overall_score, level: profile.level }.publish(&env);
+        ScoreUpdated {
+            contributor: contributor.clone(),
+            overall_score: profile.overall_score,
+            level: profile.level,
+        }
+        .publish(&env);
         Ok(())
     }
 
@@ -229,15 +236,16 @@ impl ReputationRegistry {
         profile.level = Self::compute_level(profile.overall_score);
         env.storage().persistent().set(&key, &profile);
 
-        ScoreUpdated { contributor: contributor.clone(), overall_score: profile.overall_score, level: profile.level }.publish(&env);
+        ScoreUpdated {
+            contributor: contributor.clone(),
+            overall_score: profile.overall_score,
+            level: profile.level,
+        }
+        .publish(&env);
         Ok(())
     }
 
-    pub fn record_campaign_backed(
-        env: Env,
-        module: Address,
-        backer: Address,
-    ) -> Result<(), Error> {
+    pub fn record_campaign_backed(env: Env, module: Address, backer: Address) -> Result<(), Error> {
         module.require_auth();
         Self::require_authorized(&env, &module)?;
 
@@ -284,7 +292,12 @@ impl ReputationRegistry {
         profile.level = Self::compute_level(profile.overall_score);
         env.storage().persistent().set(&key, &profile);
 
-        ScoreUpdated { contributor: contributor.clone(), overall_score: profile.overall_score, level: profile.level }.publish(&env);
+        ScoreUpdated {
+            contributor: contributor.clone(),
+            overall_score: profile.overall_score,
+            level: profile.level,
+        }
+        .publish(&env);
         Ok(())
     }
 
@@ -427,7 +440,11 @@ impl ReputationRegistry {
         Self::extend_persistent_ttl(&env, &key);
         Self::extend_instance_ttl(&env);
 
-        CreditsSpent { user, remaining: credits.credits }.publish(&env);
+        CreditsSpent {
+            user,
+            remaining: credits.credits,
+        }
+        .publish(&env);
         Ok(true)
     }
 
@@ -472,7 +489,12 @@ impl ReputationRegistry {
         credits.total_earned += added;
         env.storage().persistent().set(&key, &credits);
 
-        CreditsAwarded { user, amount: added, remaining: credits.credits }.publish(&env);
+        CreditsAwarded {
+            user,
+            amount: added,
+            remaining: credits.credits,
+        }
+        .publish(&env);
         Ok(())
     }
 
@@ -511,7 +533,11 @@ impl ReputationRegistry {
         credits.last_recharge = now;
         env.storage().persistent().set(&key, &credits);
 
-        CreditsRecharged { user, remaining: credits.credits }.publish(&env);
+        CreditsRecharged {
+            user,
+            remaining: credits.credits,
+        }
+        .publish(&env);
         Ok(())
     }
 

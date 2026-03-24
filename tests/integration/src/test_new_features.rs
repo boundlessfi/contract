@@ -7,8 +7,8 @@
 /// - CoreEscrow: route_payout, route_refund
 /// - ReputationRegistry: next_recharge_at, record_fraud, add_community_bonus, meets_skill_requirements
 use crate::setup::{setup_platform, Platform};
-use bounty_registry::storage::{BountyStatus, BountyType};
 use boundless_types::ActivityCategory;
+use bounty_registry::storage::{BountyStatus, BountyType};
 use crowdfund_registry::storage::{CampaignStatus, MilestoneStatus};
 use grant_hub::storage::{GrantStatus, GrantType};
 use hackathon_registry::storage::HackathonStatus;
@@ -43,7 +43,10 @@ fn test_fcfs_auto_release_after_7_days() {
 
     // Claim the bounty
     p.bounty.claim_bounty(&contributor, &bounty_id);
-    assert_eq!(p.bounty.get_bounty(&bounty_id).status, BountyStatus::InProgress);
+    assert_eq!(
+        p.bounty.get_bounty(&bounty_id).status,
+        BountyStatus::InProgress
+    );
     assert_eq!(p.reputation.get_credits(&contributor), 2); // spent 1
 
     // Advance past deadline + 7 days (604_800 seconds)
@@ -57,7 +60,10 @@ fn test_fcfs_auto_release_after_7_days() {
     p.bounty.auto_release_check(&bounty_id);
 
     // Bounty completed, contributor paid
-    assert_eq!(p.bounty.get_bounty(&bounty_id).status, BountyStatus::Completed);
+    assert_eq!(
+        p.bounty.get_bounty(&bounty_id).status,
+        BountyStatus::Completed
+    );
     assert_eq!(p.token.balance(&contributor), 10_000);
 
     // Reputation recorded
@@ -120,10 +126,9 @@ fn test_project_deposit_lock_and_release() {
     p.sac.mint(&owner, &100_000);
 
     // Register project (verification level 0 by default)
-    let pid = p.project.register_project(
-        &owner,
-        &String::from_str(&p.env, "QmProject"),
-    );
+    let pid = p
+        .project
+        .register_project(&owner, &String::from_str(&p.env, "QmProject"));
 
     // Calculate deposit for a 10_000 budget at level 0 (10% = 1_000)
     let deposit = p.project.calculate_deposit(&pid, &10_000);
@@ -140,7 +145,8 @@ fn test_project_deposit_lock_and_release() {
     p.project.add_authorized_module(&p.bounty_addr);
 
     // Release deposit back to owner (via authorized module)
-    p.project.release_deposit(&p.bounty_addr, &pid, &1_000, &p.token_addr);
+    p.project
+        .release_deposit(&p.bounty_addr, &pid, &1_000, &p.token_addr);
     assert_eq!(p.token.balance(&owner), 100_000);
 
     let project = p.project.get_project(&pid);
@@ -153,10 +159,9 @@ fn test_project_deposit_forfeit() {
     let owner = Address::generate(&p.env);
     p.sac.mint(&owner, &100_000);
 
-    let pid = p.project.register_project(
-        &owner,
-        &String::from_str(&p.env, "QmProject"),
-    );
+    let pid = p
+        .project
+        .register_project(&owner, &String::from_str(&p.env, "QmProject"));
 
     // Lock deposit
     p.project.lock_deposit(&pid, &5_000, &p.token_addr);
@@ -165,7 +170,8 @@ fn test_project_deposit_forfeit() {
     let treasury_before = p.token.balance(&p.treasury);
 
     // Admin forfeits deposit to treasury
-    p.project.forfeit_deposit(&pid, &5_000, &p.token_addr, &p.treasury);
+    p.project
+        .forfeit_deposit(&pid, &5_000, &p.token_addr, &p.treasury);
 
     assert_eq!(p.token.balance(&p.treasury), treasury_before + 5_000);
     assert_eq!(p.project.get_project(&pid).deposit_held, 0);
@@ -176,10 +182,9 @@ fn test_project_deposit_calculate_by_level() {
     let p = setup_platform();
     let owner = Address::generate(&p.env);
 
-    let pid = p.project.register_project(
-        &owner,
-        &String::from_str(&p.env, "QmP"),
-    );
+    let pid = p
+        .project
+        .register_project(&owner, &String::from_str(&p.env, "QmP"));
 
     // Level 0: 10%
     assert_eq!(p.project.calculate_deposit(&pid, &20_000), 2_000);
@@ -234,7 +239,10 @@ fn test_dispute_milestone() {
 
     // Fund it
     p.crowdfund.pledge(&backer, &cid, &3_000);
-    assert_eq!(p.crowdfund.get_campaign(&cid).status, CampaignStatus::Funded);
+    assert_eq!(
+        p.crowdfund.get_campaign(&cid).status,
+        CampaignStatus::Funded
+    );
 
     // Submit milestone
     p.crowdfund.submit_milestone(&cid, &0);
@@ -303,7 +311,10 @@ fn test_terminate_campaign() {
 
     // Admin terminates
     p.crowdfund.terminate_campaign(&cid);
-    assert_eq!(p.crowdfund.get_campaign(&cid).status, CampaignStatus::Cancelled);
+    assert_eq!(
+        p.crowdfund.get_campaign(&cid).status,
+        CampaignStatus::Cancelled
+    );
 
     // Refund backer
     p.crowdfund.process_refund_batch(&cid);
@@ -333,7 +344,10 @@ fn test_flag_overdue_milestone() {
 
     // Fund it
     p.crowdfund.pledge(&backer, &cid, &3_000);
-    assert_eq!(p.crowdfund.get_campaign(&cid).status, CampaignStatus::Funded);
+    assert_eq!(
+        p.crowdfund.get_campaign(&cid).status,
+        CampaignStatus::Funded
+    );
 
     // Advance 30+ days past deadline
     p.env.ledger().with_mut(|l| {
@@ -402,14 +416,20 @@ fn test_open_judging_permissionless() {
         &prize_tiers,
     );
 
-    assert_eq!(p.hackathon.get_hackathon(&hid).status, HackathonStatus::Registration);
+    assert_eq!(
+        p.hackathon.get_hackathon(&hid).status,
+        HackathonStatus::Registration
+    );
 
     // Advance past submission deadline
     p.env.ledger().set_timestamp(2500);
 
     // Anyone can open judging
     p.hackathon.open_judging(&hid);
-    assert_eq!(p.hackathon.get_hackathon(&hid).status, HackathonStatus::Judging);
+    assert_eq!(
+        p.hackathon.get_hackathon(&hid).status,
+        HackathonStatus::Judging
+    );
 }
 
 #[test]
@@ -488,7 +508,8 @@ fn test_sponsored_track_lifecycle() {
     p.hackathon.register_team(&hid, &lead1);
 
     p.env.ledger().set_timestamp(1500);
-    p.hackathon.submit_project(&hid, &lead1, &String::from_str(&p.env, "ipfs://ui"));
+    p.hackathon
+        .submit_project(&hid, &lead1, &String::from_str(&p.env, "ipfs://ui"));
 
     p.env.ledger().set_timestamp(2500);
     p.hackathon.score_submission(&hid, &judge, &lead1, &90);
@@ -500,7 +521,8 @@ fn test_sponsored_track_lifecycle() {
     let mut winners = Vec::new(&p.env);
     winners.push_back((lead1.clone(), 5_000i128));
 
-    p.hackathon.distribute_track_prizes(&hid, &track_id, &winners);
+    p.hackathon
+        .distribute_track_prizes(&hid, &track_id, &winners);
 
     // lead1 received main prize (10k) + track prize (5k)
     assert_eq!(p.token.balance(&lead1), 15_000);
@@ -538,7 +560,8 @@ fn test_permissionless_finalize_hackathon() {
     p.hackathon.register_team(&hid, &lead1);
 
     p.env.ledger().set_timestamp(1500);
-    p.hackathon.submit_project(&hid, &lead1, &String::from_str(&p.env, "ipfs://pf"));
+    p.hackathon
+        .submit_project(&hid, &lead1, &String::from_str(&p.env, "ipfs://pf"));
 
     p.env.ledger().set_timestamp(2500);
     p.hackathon.score_submission(&hid, &judge, &lead1, &85);
@@ -549,7 +572,10 @@ fn test_permissionless_finalize_hackathon() {
     // A random address finalizes — no creator auth needed
     p.hackathon.finalize_hackathon(&hid);
 
-    assert_eq!(p.hackathon.get_hackathon(&hid).status, HackathonStatus::Completed);
+    assert_eq!(
+        p.hackathon.get_hackathon(&hid).status,
+        HackathonStatus::Completed
+    );
     assert_eq!(p.token.balance(&lead1), 10_000);
 }
 
@@ -568,13 +594,9 @@ fn test_cancel_milestone_grant() {
     let mut descs: Vec<(String, u32)> = Vec::new(&p.env);
     descs.push_back((String::from_str(&p.env, "Phase 1"), 10000));
 
-    let gid = p.grant.create_milestone_grant(
-        &creator,
-        &recipient,
-        &20_000,
-        &p.token_addr,
-        &descs,
-    );
+    let gid = p
+        .grant
+        .create_milestone_grant(&creator, &recipient, &20_000, &p.token_addr, &descs);
 
     assert_eq!(p.token.balance(&creator), 80_000);
     assert_eq!(p.grant.get_grant(&gid).status, GrantStatus::Active);
@@ -599,13 +621,9 @@ fn test_cancel_completed_grant_fails() {
     let mut descs: Vec<(String, u32)> = Vec::new(&p.env);
     descs.push_back((String::from_str(&p.env, "All"), 10000));
 
-    let gid = p.grant.create_milestone_grant(
-        &creator,
-        &recipient,
-        &10_000,
-        &p.token_addr,
-        &descs,
-    );
+    let gid = p
+        .grant
+        .create_milestone_grant(&creator, &recipient, &10_000, &p.token_addr, &descs);
 
     // Complete the grant
     p.grant.submit_grant_milestone(&recipient, &gid, &0);
@@ -764,11 +782,8 @@ fn test_meets_skill_requirements() {
     assert!(!meets);
 
     // Level 0 with no min score should pass
-    let meets = p.reputation.meets_skill_requirements(
-        &contributor,
-        &0,
-        &ActivityCategory::Development,
-        &0,
-    );
+    let meets =
+        p.reputation
+            .meets_skill_requirements(&contributor, &0, &ActivityCategory::Development, &0);
     assert!(meets);
 }

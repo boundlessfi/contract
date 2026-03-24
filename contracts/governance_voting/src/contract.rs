@@ -7,9 +7,7 @@ use boundless_types::ttl::{
 
 use crate::error::Error;
 use crate::events::{QFDonationRecorded, SessionConcluded, SessionCreated, VoteCast};
-use crate::storage::{
-    DataKey, VoteContext, VoteOption, VoteRecord, VoteStatus, VotingSession,
-};
+use crate::storage::{DataKey, VoteContext, VoteOption, VoteRecord, VoteStatus, VotingSession};
 
 #[contract]
 pub struct GovernanceVoting;
@@ -132,9 +130,7 @@ impl GovernanceVoting {
         };
 
         let session_key = DataKey::Session(session_id.clone());
-        env.storage()
-            .persistent()
-            .set(&session_key, &session);
+        env.storage().persistent().set(&session_key, &session);
         Self::extend_persistent_ttl(&env, &session_key);
         Self::extend_instance_ttl(&env);
 
@@ -208,9 +204,7 @@ impl GovernanceVoting {
             }
         }
         let sess_key = DataKey::Session(session_id.clone());
-        env.storage()
-            .persistent()
-            .set(&sess_key, &session);
+        env.storage().persistent().set(&sess_key, &session);
         Self::extend_persistent_ttl(&env, &sess_key);
         Self::extend_instance_ttl(&env);
 
@@ -252,10 +246,7 @@ impl GovernanceVoting {
             .persistent()
             .set(&DataKey::Session(session_id.clone()), &session);
 
-        SessionConcluded {
-            session_id,
-        }
-        .publish(&env);
+        SessionConcluded { session_id }.publish(&env);
 
         Ok(())
     }
@@ -382,8 +373,11 @@ impl GovernanceVoting {
 
         for i in 0..option_count {
             let sq = squares.get(i).ok_or(Error::InvalidOption)?;
-            let share = sq.checked_mul(matching_pool).ok_or(Error::Overflow)?
-                .checked_div(total_squares).ok_or(Error::Overflow)?;
+            let share = sq
+                .checked_mul(matching_pool)
+                .ok_or(Error::Overflow)?
+                .checked_div(total_squares)
+                .ok_or(Error::Overflow)?;
             results.push_back((i, share));
         }
 
@@ -431,7 +425,11 @@ impl GovernanceVoting {
         Ok(results)
     }
 
-    pub fn get_option(env: Env, session_id: BytesN<32>, option_id: u32) -> Result<VoteOption, Error> {
+    pub fn get_option(
+        env: Env,
+        session_id: BytesN<32>,
+        option_id: u32,
+    ) -> Result<VoteOption, Error> {
         env.storage()
             .persistent()
             .get(&DataKey::VoteOption(session_id, option_id))

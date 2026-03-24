@@ -10,7 +10,9 @@ use boundless_types::ttl::{
     INSTANCE_TTL_EXTEND, INSTANCE_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND, PERSISTENT_TTL_THRESHOLD,
 };
 use boundless_types::ModuleType;
-use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, IntoVal, String, Symbol, Val, Vec};
+use soroban_sdk::{
+    contract, contractimpl, Address, BytesN, Env, IntoVal, String, Symbol, Val, Vec,
+};
 
 const BACKER_BATCH_SIZE: u32 = 50;
 
@@ -146,7 +148,9 @@ impl CrowdfundRegistry {
             .get(&DataKey::CampaignCount)
             .unwrap_or(0);
         count += 1;
-        env.storage().instance().set(&DataKey::CampaignCount, &count);
+        env.storage()
+            .instance()
+            .set(&DataKey::CampaignCount, &count);
 
         // Create escrow pool (0 initial deposit — backers will pledge into it)
         let escrow_addr = Self::get_escrow_addr(&env);
@@ -197,9 +201,7 @@ impl CrowdfundRegistry {
         };
 
         let camp_key = DataKey::Campaign(count);
-        env.storage()
-            .persistent()
-            .set(&camp_key, &campaign);
+        env.storage().persistent().set(&camp_key, &campaign);
         Self::extend_persistent_ttl(&env, &camp_key);
         Self::extend_instance_ttl(&env);
 
@@ -361,12 +363,14 @@ impl CrowdfundRegistry {
             return Err(Error::NotSubmitted);
         }
 
-        let session_id = campaign.vote_session_id.clone().ok_or(Error::NoVoteSession)?;
+        let session_id = campaign
+            .vote_session_id
+            .clone()
+            .ok_or(Error::NoVoteSession)?;
 
         let gov_addr = Self::get_gov_addr(&env);
         let args: Vec<Val> = Vec::from_array(&env, [session_id.into_val(&env)]);
-        let reached: bool =
-            env.invoke_contract(&gov_addr, &sym(&env, "threshold_reached"), args);
+        let reached: bool = env.invoke_contract(&gov_addr, &sym(&env, "threshold_reached"), args);
 
         if !reached {
             return Err(Error::VoteThresholdNotMet);
@@ -414,18 +418,18 @@ impl CrowdfundRegistry {
                 campaign.asset.clone().into_val(&env),
             ],
         );
-        let net: i128 =
-            env.invoke_contract(&escrow_addr, &sym(&env, "route_pledge"), pledge_args);
+        let net: i128 = env.invoke_contract(&escrow_addr, &sym(&env, "route_pledge"), pledge_args);
 
-        campaign.current_funding = campaign.current_funding.checked_add(net).ok_or(Error::Overflow)?;
+        campaign.current_funding = campaign
+            .current_funding
+            .checked_add(net)
+            .ok_or(Error::Overflow)?;
 
         // Track backer pledge amount
         let pledge_key = DataKey::Pledge(campaign_id, backer.clone());
         let existing: i128 = env.storage().persistent().get(&pledge_key).unwrap_or(0);
         let new_pledge = existing.checked_add(net).ok_or(Error::Overflow)?;
-        env.storage()
-            .persistent()
-            .set(&pledge_key, &new_pledge);
+        env.storage().persistent().set(&pledge_key, &new_pledge);
 
         // Add backer to batch list (if new)
         if existing == 0 {
@@ -455,7 +459,8 @@ impl CrowdfundRegistry {
                     .persistent()
                     .get(&DataKey::CampaignMilestone(campaign_id, i))
                     .unwrap();
-                let ms_amount = campaign.current_funding
+                let ms_amount = campaign
+                    .current_funding
                     .checked_mul(ms.pct as i128)
                     .ok_or(Error::Overflow)?
                     / 10000;
@@ -492,11 +497,7 @@ impl CrowdfundRegistry {
     // MILESTONE MANAGEMENT
     // ========================================================================
 
-    pub fn submit_milestone(
-        env: Env,
-        campaign_id: u64,
-        milestone_index: u32,
-    ) -> Result<(), Error> {
+    pub fn submit_milestone(env: Env, campaign_id: u64, milestone_index: u32) -> Result<(), Error> {
         let key = DataKey::Campaign(campaign_id);
         let mut campaign: Campaign = env
             .storage()
@@ -505,8 +506,7 @@ impl CrowdfundRegistry {
             .ok_or(Error::CampaignNotFound)?;
         campaign.owner.require_auth();
 
-        if campaign.status != CampaignStatus::Funded
-            && campaign.status != CampaignStatus::Executing
+        if campaign.status != CampaignStatus::Funded && campaign.status != CampaignStatus::Executing
         {
             return Err(Error::InvalidState);
         }
@@ -603,11 +603,7 @@ impl CrowdfundRegistry {
                     campaign.owner.clone().into_val(&env),
                 ],
             );
-            env.invoke_contract::<()>(
-                &rep_addr,
-                &sym(&env, "record_campaign_backed"),
-                rep_args,
-            );
+            env.invoke_contract::<()>(&rep_addr, &sym(&env, "record_campaign_backed"), rep_args);
         }
 
         env.storage().persistent().set(&key, &campaign);
@@ -621,11 +617,7 @@ impl CrowdfundRegistry {
         Ok(())
     }
 
-    pub fn reject_milestone(
-        env: Env,
-        campaign_id: u64,
-        milestone_index: u32,
-    ) -> Result<(), Error> {
+    pub fn reject_milestone(env: Env, campaign_id: u64, milestone_index: u32) -> Result<(), Error> {
         let admin = Self::require_admin(&env)?;
         admin.require_auth();
 
@@ -712,8 +704,7 @@ impl CrowdfundRegistry {
             .get(&key)
             .ok_or(Error::CampaignNotFound)?;
 
-        if campaign.status != CampaignStatus::Failed
-            && campaign.status != CampaignStatus::Cancelled
+        if campaign.status != CampaignStatus::Failed && campaign.status != CampaignStatus::Cancelled
         {
             return Err(Error::InvalidState);
         }
@@ -878,8 +869,7 @@ impl CrowdfundRegistry {
             .get(&key)
             .ok_or(Error::CampaignNotFound)?;
 
-        if campaign.status != CampaignStatus::Funded
-            && campaign.status != CampaignStatus::Executing
+        if campaign.status != CampaignStatus::Funded && campaign.status != CampaignStatus::Executing
         {
             return Err(Error::InvalidState);
         }
