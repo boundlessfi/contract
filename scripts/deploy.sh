@@ -32,22 +32,23 @@ echo "Treasury: $TREASURY_ADDRESS"
 echo ""
 
 # Helper: deploy a contract and return its ID
+# Info messages go to stderr so only the contract ID goes to stdout
 deploy_contract() {
   local name="$1"
   local wasm="$WASM_DIR/${name}.wasm"
 
   if [[ ! -f "$wasm" ]]; then
-    echo "ERROR: WASM not found: $wasm (run 'stellar contract build' first)"
+    echo "ERROR: WASM not found: $wasm (run 'stellar contract build' first)" >&2
     exit 1
   fi
 
-  echo "Deploying $name..."
+  echo "Deploying $name..." >&2
   local contract_id
   contract_id=$(stellar contract deploy \
     --wasm "$wasm" \
     --source "$ADMIN_SECRET" \
     --network "$NETWORK")
-  echo "  -> $contract_id"
+  echo "  -> $contract_id" >&2
   echo "$contract_id"
 }
 
