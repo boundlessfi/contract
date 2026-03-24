@@ -15,4 +15,5 @@ pub enum Error {
     SessionNotEnded = 508,
     VotingNotStarted = 509,
     InvalidTimeRange = 510,
+    Overflow = 511,
 }

@@ -213,7 +213,7 @@ impl CrowdfundRegistry {
             &campaign.asset,
         );
 
-        campaign.current_funding += net;
+        campaign.current_funding = campaign.current_funding.checked_add(net).ok_or(Error::Overflow)?;
 
         // Track backer pledge amount
         let pledge_key = DataKey::Pledge(campaign_id, backer.clone());
@@ -555,7 +555,7 @@ impl CrowdfundRegistry {
             .storage()
             .instance()
             .get(&DataKey::CoreEscrow)
-            .unwrap();
+            .expect("not initialized");
         CoreEscrowClient::new(env, &addr)
     }
 
@@ -564,7 +564,7 @@ impl CrowdfundRegistry {
             .storage()
             .instance()
             .get(&DataKey::ReputationRegistry)
-            .unwrap();
+            .expect("not initialized");
         ReputationRegistryClient::new(env, &addr)
     }
 }

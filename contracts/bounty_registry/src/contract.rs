@@ -896,7 +896,7 @@ impl BountyRegistry {
             .storage()
             .instance()
             .get(&DataKey::CoreEscrow)
-            .unwrap();
+            .expect("not initialized");
         CoreEscrowClient::new(env, &addr)
     }
 
@@ -905,7 +905,7 @@ impl BountyRegistry {
             .storage()
             .instance()
             .get(&DataKey::ReputationRegistry)
-            .unwrap();
+            .expect("not initialized");
         ReputationRegistryClient::new(env, &addr)
     }
 }

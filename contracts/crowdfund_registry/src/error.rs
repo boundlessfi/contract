@@ -24,4 +24,5 @@ pub enum Error {
     RefundBatchDone = 817,
     DeadlineNotPassed = 818,
     AmountNotPositive = 819,
+    Overflow = 820,
 }

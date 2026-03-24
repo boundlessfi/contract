@@ -269,7 +269,7 @@ impl GrantHub {
                 .storage()
                 .persistent()
                 .get(&DataKey::GrantMilestone(grant_id, i))
-                .unwrap();
+                .ok_or(Error::MilestoneNotFound)?;
             if m.status != MilestoneStatus::Released {
                 all_done = false;
                 break;
@@ -390,6 +390,13 @@ impl GrantHub {
         grant_id: u64,
         recipients: Vec<Address>,
     ) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+
         let mut grant: Grant = env
             .storage()
             .persistent()
@@ -428,7 +435,7 @@ impl GrantHub {
                     let share =
                         (grant.amount * opt.weighted_votes as i128) / total_votes as i128;
                     if share > 0 {
-                        let recipient = recipients.get(i as u32).unwrap();
+                        let recipient = recipients.get(i as u32).ok_or(Error::InvalidProjectIndex)?;
                         escrow.release_partial(
                             &grant.pool_id,
                             &recipient,
@@ -589,6 +596,13 @@ impl GrantHub {
         grant_id: u64,
         project_addresses: Vec<Address>,
     ) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+
         let mut grant: Grant = env
             .storage()
             .persistent()
@@ -619,7 +633,7 @@ impl GrantHub {
 
         for (index, amount) in distributions.iter() {
             if amount > 0 {
-                let addr = project_addresses.get(index).unwrap();
+                let addr = project_addresses.get(index).ok_or(Error::InvalidProjectIndex)?;
                 escrow.release_partial(&grant.pool_id, &addr, &amount);
                 rep.record_grant_received(
                     &env.current_contract_address(),
@@ -658,7 +672,7 @@ impl GrantHub {
             .storage()
             .instance()
             .get(&DataKey::CoreEscrow)
-            .unwrap();
+            .expect("not initialized");
         CoreEscrowClient::new(env, &addr)
     }
 
@@ -667,7 +681,7 @@ impl GrantHub {
             .storage()
             .instance()
             .get(&DataKey::ReputationRegistry)
-            .unwrap();
+            .expect("not initialized");
         ReputationRegistryClient::new(env, &addr)
     }
 
@@ -676,7 +690,7 @@ impl GrantHub {
             .storage()
             .instance()
             .get(&DataKey::GovernanceVoting)
-            .unwrap();
+            .expect("not initialized");
         GovernanceVotingClient::new(env, &addr)
     }
 

@@ -75,7 +75,9 @@ impl CoreEscrow {
             .persistent()
             .get(&DataKey::EscrowPool(pool_id))
             .ok_or(Error::PoolNotFound)?;
-        Ok(pool.total_deposited - pool.total_released - pool.total_refunded)
+        Ok(pool.total_deposited
+            .checked_sub(pool.total_released).ok_or(Error::Overflow)?
+            .checked_sub(pool.total_refunded).ok_or(Error::Overflow)?)
     }
 
     pub fn is_locked(env: Env, pool_id: BytesN<32>) -> Result<bool, Error> {
@@ -118,8 +120,8 @@ impl CoreEscrow {
             .get(&DataKey::FeeConfig)
             .ok_or(Error::NotInitialized)?;
         let fee_bps = config.get_fee_bps(&sub_type);
-        let fee = math::calculate_fee_bps(gross, fee_bps);
-        let net = gross - fee;
+        let fee = math::calculate_fee_bps(gross, fee_bps).ok_or(Error::Overflow)?;
+        let net = gross.checked_sub(fee).ok_or(Error::Overflow)?;
         Ok((fee, net))
     }
 
@@ -129,8 +131,8 @@ impl CoreEscrow {
             .instance()
             .get(&DataKey::FeeConfig)
             .ok_or(Error::NotInitialized)?;
-        let fee = math::calculate_fee_bps(pledge, config.crowdfund_fee_bps);
-        Ok(pledge + fee)
+        let fee = math::calculate_fee_bps(pledge, config.crowdfund_fee_bps).ok_or(Error::Overflow)?;
+        Ok(pledge.checked_add(fee).ok_or(Error::Overflow)?)
     }
 
     pub fn get_fee_record(env: Env, pool_id: BytesN<32>) -> Result<FeeRecord, Error> {
@@ -456,7 +458,9 @@ impl CoreEscrow {
             .get(&pool_key)
             .ok_or(Error::PoolNotFound)?;
         pool.authorized_caller.require_auth();
-        let remaining = pool.total_deposited - pool.total_released - pool.total_refunded;
+        let remaining = pool.total_deposited
+            .checked_sub(pool.total_released).ok_or(Error::Overflow)?
+            .checked_sub(pool.total_refunded).ok_or(Error::Overflow)?;
         if amount > remaining {
             return Err(Error::InsufficientFunds);
         }
@@ -492,7 +496,9 @@ impl CoreEscrow {
             .get(&pool_key)
             .ok_or(Error::PoolNotFound)?;
         pool.authorized_caller.require_auth();
-        let remaining = pool.total_deposited - pool.total_released - pool.total_refunded;
+        let remaining = pool.total_deposited
+            .checked_sub(pool.total_released).ok_or(Error::Overflow)?
+            .checked_sub(pool.total_refunded).ok_or(Error::Overflow)?;
         if remaining > 0 {
             pool.total_refunded = pool
                 .total_refunded
@@ -594,7 +600,7 @@ impl CoreEscrow {
         if amount > fund.balance {
             return Err(Error::InsuranceInsufficient);
         }
-        fund.balance -= amount;
+        fund.balance = fund.balance.checked_sub(amount).ok_or(Error::Overflow)?;
         fund.total_paid_out = fund
             .total_paid_out
             .checked_add(amount)
@@ -641,9 +647,9 @@ impl CoreEscrow {
             .get(&DataKey::Treasury)
             .ok_or(Error::NotInitialized)?;
         let fee_bps = config.get_fee_bps(&sub_type);
-        let fee = math::calculate_fee_bps(gross_amount, fee_bps);
-        let (treasury_cut, insurance_cut) = math::split_fee(fee, config.insurance_cut_bps);
-        let net = gross_amount - fee;
+        let fee = math::calculate_fee_bps(gross_amount, fee_bps).ok_or(Error::Overflow)?;
+        let (treasury_cut, insurance_cut) = math::split_fee(fee, config.insurance_cut_bps).ok_or(Error::Overflow)?;
+        let net = gross_amount.checked_sub(fee).ok_or(Error::Overflow)?;
         let token_client = token::Client::new(&env, &asset);
         let contract_addr = env.current_contract_address();
         if net > 0 {
@@ -716,8 +722,8 @@ impl CoreEscrow {
             .instance()
             .get(&DataKey::Treasury)
             .ok_or(Error::NotInitialized)?;
-        let fee = math::calculate_fee_bps(pledge_amount, config.crowdfund_fee_bps);
-        let (treasury_cut, insurance_cut) = math::split_fee(fee, config.insurance_cut_bps);
+        let fee = math::calculate_fee_bps(pledge_amount, config.crowdfund_fee_bps).ok_or(Error::Overflow)?;
+        let (treasury_cut, insurance_cut) = math::split_fee(fee, config.insurance_cut_bps).ok_or(Error::Overflow)?;
         let token_client = token::Client::new(&env, &asset);
         let contract_addr = env.current_contract_address();
         token_client.transfer(&backer, &contract_addr, &pledge_amount);
@@ -742,7 +748,7 @@ impl CoreEscrow {
         FeeCharged {
             pool_id: pool_id.clone(),
             sub_type: SubType::CrowdfundPledge,
-            gross: pledge_amount + fee,
+            gross: pledge_amount.checked_add(fee).ok_or(Error::Overflow)?,
             fee,
             treasury_cut,
             insurance_cut,

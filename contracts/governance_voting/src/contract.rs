@@ -97,7 +97,7 @@ impl GovernanceVoting {
 
         let option_count = options.len();
         for i in 0..option_count {
-            let label = options.get(i).unwrap();
+            let label = options.get(i).ok_or(Error::InvalidOption)?;
             let opt = VoteOption {
                 id: i,
                 label,
@@ -190,11 +190,11 @@ impl GovernanceVoting {
             1
         };
 
-        option.votes += 1;
-        option.weighted_votes += weight as u64;
+        option.votes = option.votes.saturating_add(1);
+        option.weighted_votes = option.weighted_votes.saturating_add(weight as u64);
         env.storage().persistent().set(&opt_key, &option);
 
-        session.total_votes += 1;
+        session.total_votes = session.total_votes.saturating_add(1);
         if let Some(threshold) = session.threshold {
             if session.total_votes >= threshold {
                 session.threshold_reached = true;
@@ -313,9 +313,9 @@ impl GovernanceVoting {
         let old_sum_sqrt: i128 = env.storage().persistent().get(&sum_sqrt_key).unwrap_or(0);
 
         // We don't track per-donor here for simplicity — each call is a new donation
-        let scaled_amount = amount * 1_000_000; // scale for sqrt precision
-        let sqrt_val = int_sqrt_i128(scaled_amount);
-        let new_sum_sqrt = old_sum_sqrt + sqrt_val;
+        let scaled_amount = amount.checked_mul(1_000_000).ok_or(Error::Overflow)?;
+        let sqrt_val = int_sqrt_i128(scaled_amount).ok_or(Error::InvalidOption)?;
+        let new_sum_sqrt = old_sum_sqrt.checked_add(sqrt_val).ok_or(Error::Overflow)?;
         env.storage().persistent().set(&sum_sqrt_key, &new_sum_sqrt);
 
         QFDonationRecorded {
@@ -358,9 +358,9 @@ impl GovernanceVoting {
         for i in 0..option_count {
             let sum_sqrt_key = DataKey::OptionSumSqrt(session_id.clone(), i);
             let sum_sqrt: i128 = env.storage().persistent().get(&sum_sqrt_key).unwrap_or(0);
-            let sq = sum_sqrt * sum_sqrt;
+            let sq = sum_sqrt.checked_mul(sum_sqrt).ok_or(Error::Overflow)?;
             squares.push_back(sq);
-            total_squares += sq;
+            total_squares = total_squares.checked_add(sq).ok_or(Error::Overflow)?;
         }
 
         if total_squares == 0 {
@@ -371,8 +371,9 @@ impl GovernanceVoting {
         }
 
         for i in 0..option_count {
-            let sq = squares.get(i).unwrap();
-            let share = (sq * matching_pool) / total_squares;
+            let sq = squares.get(i).ok_or(Error::InvalidOption)?;
+            let share = sq.checked_mul(matching_pool).ok_or(Error::Overflow)?
+                .checked_div(total_squares).ok_or(Error::Overflow)?;
             results.push_back((i, share));
         }
 
@@ -409,7 +410,7 @@ impl GovernanceVoting {
                 .storage()
                 .persistent()
                 .get(&DataKey::VoteOption(session_id.clone(), i))
-                .unwrap();
+                .ok_or(Error::InvalidOption)?;
             results.push_back(opt);
         }
         Ok(results)

@@ -1,0 +1,23 @@
+[package]
+name = "integration-tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["lib"]
+
+[dependencies]
+soroban-sdk = { workspace = true }
+boundless-types = { workspace = true }
+core_escrow = { path = "../../contracts/core_escrow" }
+reputation_registry = { path = "../../contracts/reputation_registry" }
+governance_voting = { path = "../../contracts/governance_voting" }
+project_registry = { path = "../../contracts/project_registry" }
+bounty_registry = { path = "../../contracts/bounty_registry" }
+crowdfund_registry = { path = "../../contracts/crowdfund_registry" }
+grant_hub = { path = "../../contracts/grant_hub" }
+hackathon_registry = { path = "../../contracts/hackathon_registry" }
+
+[dev-dependencies]
+soroban-sdk = { workspace = true, features = ["testutils"] }

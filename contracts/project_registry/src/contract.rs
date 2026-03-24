@@ -17,6 +17,7 @@ impl ProjectRegistry {
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(Error::AlreadyInitialized);
         }
+        admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::ProjectCount, &0u64);
         Ok(())

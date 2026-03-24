@@ -1,11 +1,12 @@
 [package]
 name = "bounty_registry"
 version = "0.0.0"
+authors = ["DevCollins <collins@boundlessfi.xyz>"]
 edition = "2021"
 publish = false
 
 [lib]
-crate-type = ["lib", "cdylib"]
+crate-type = ["lib"]
 doctest = false
 
 [dependencies]

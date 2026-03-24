@@ -10,6 +10,7 @@ members = [
   "contracts/crowdfund_registry",
   "contracts/grant_hub",
   "contracts/hackathon_registry",
+  "tests/integration",
 ]
 
 [workspace.dependencies]

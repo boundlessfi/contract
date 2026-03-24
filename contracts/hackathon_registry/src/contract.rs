@@ -29,6 +29,7 @@ impl HackathonRegistry {
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(Error::AlreadyInitialized);
         }
+        admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage()
             .instance()
@@ -420,6 +421,7 @@ impl HackathonRegistry {
 
     pub fn finalize_hackathon(env: Env, hackathon_id: u64) -> Result<(), Error> {
         let mut hackathon = Self::load_hackathon(&env, hackathon_id)?;
+        hackathon.creator.require_auth();
 
         // Must be after judging deadline
         if env.ledger().timestamp() <= hackathon.judging_deadline {
