@@ -10,8 +10,6 @@ members = [
   "contracts/crowdfund_registry",
   "contracts/grant_hub",
   "contracts/hackathon_registry",
-  "contracts/smart_wallet",
-  "contracts/smart_wallet_factory",
 ]
 
 [workspace.dependencies]
