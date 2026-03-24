@@ -72,20 +72,14 @@ impl ReputationRegistry {
         // Initialize credits
         let credit_key = DataKey::CreditData(contributor);
         let credits = CreditData::new(now);
-        env.storage()
-            .persistent()
-            .set(&credit_key, &credits);
+        env.storage().persistent().set(&credit_key, &credits);
         Self::extend_persistent_ttl(&env, &credit_key);
         Self::extend_instance_ttl(&env);
 
         Ok(())
     }
 
-    pub fn set_profile_metadata(
-        env: Env,
-        contributor: Address,
-        cid: String,
-    ) -> Result<(), Error> {
+    pub fn set_profile_metadata(env: Env, contributor: Address, cid: String) -> Result<(), Error> {
         contributor.require_auth();
         let key = DataKey::Profile(contributor);
         let mut profile: ContributorProfile = env
@@ -162,7 +156,11 @@ impl ReputationRegistry {
         env.storage()
             .instance()
             .set(&DataKey::AuthorizedModule(module.clone()), &true);
-        ModuleAuthorized { module, authorized: true }.publish(&env);
+        ModuleAuthorized {
+            module,
+            authorized: true,
+        }
+        .publish(&env);
         Ok(())
     }
 
@@ -172,7 +170,11 @@ impl ReputationRegistry {
         env.storage()
             .instance()
             .remove(&DataKey::AuthorizedModule(module.clone()));
-        ModuleAuthorized { module, authorized: false }.publish(&env);
+        ModuleAuthorized {
+            module,
+            authorized: false,
+        }
+        .publish(&env);
         Ok(())
     }
 
@@ -193,17 +195,24 @@ impl ReputationRegistry {
         let key = DataKey::Profile(contributor.clone());
         let mut profile = Self::get_or_create_profile(&env, &contributor);
 
-        profile.overall_score += points;
+        profile.overall_score = profile.overall_score.saturating_add(points);
         let current = profile.category_scores.get(category.clone()).unwrap_or(0);
-        profile.category_scores.set(category, current + points);
-        profile.bounties_completed += 1;
+        profile
+            .category_scores
+            .set(category, current.saturating_add(points));
+        profile.bounties_completed = profile.bounties_completed.saturating_add(1);
 
         profile.level = Self::compute_level(profile.overall_score);
         env.storage().persistent().set(&key, &profile);
         Self::extend_persistent_ttl(&env, &key);
         Self::extend_instance_ttl(&env);
 
-        ScoreUpdated { contributor: contributor.clone(), overall_score: profile.overall_score, level: profile.level }.publish(&env);
+        ScoreUpdated {
+            contributor: contributor.clone(),
+            overall_score: profile.overall_score,
+            level: profile.level,
+        }
+        .publish(&env);
         Ok(())
     }
 
@@ -220,31 +229,32 @@ impl ReputationRegistry {
         let key = DataKey::Profile(contributor.clone());
         let mut profile = Self::get_or_create_profile(&env, &contributor);
 
-        profile.overall_score += points;
-        profile.hackathons_entered += 1;
+        profile.overall_score = profile.overall_score.saturating_add(points);
+        profile.hackathons_entered = profile.hackathons_entered.saturating_add(1);
         if is_win {
-            profile.hackathons_won += 1;
+            profile.hackathons_won = profile.hackathons_won.saturating_add(1);
         }
 
         profile.level = Self::compute_level(profile.overall_score);
         env.storage().persistent().set(&key, &profile);
 
-        ScoreUpdated { contributor: contributor.clone(), overall_score: profile.overall_score, level: profile.level }.publish(&env);
+        ScoreUpdated {
+            contributor: contributor.clone(),
+            overall_score: profile.overall_score,
+            level: profile.level,
+        }
+        .publish(&env);
         Ok(())
     }
 
-    pub fn record_campaign_backed(
-        env: Env,
-        module: Address,
-        backer: Address,
-    ) -> Result<(), Error> {
+    pub fn record_campaign_backed(env: Env, module: Address, backer: Address) -> Result<(), Error> {
         module.require_auth();
         Self::require_authorized(&env, &module)?;
 
         let key = DataKey::Profile(backer.clone());
         let mut profile = Self::get_or_create_profile(&env, &backer);
-        profile.campaigns_backed += 1;
-        profile.overall_score += 5; // small reputation boost
+        profile.campaigns_backed = profile.campaigns_backed.saturating_add(1);
+        profile.overall_score = profile.overall_score.saturating_add(5); // small reputation boost
         profile.level = Self::compute_level(profile.overall_score);
         env.storage().persistent().set(&key, &profile);
         Ok(())
@@ -261,9 +271,9 @@ impl ReputationRegistry {
 
         let key = DataKey::Profile(recipient.clone());
         let mut profile = Self::get_or_create_profile(&env, &recipient);
-        profile.grants_received += 1;
-        profile.total_earned += amount;
-        profile.overall_score += 20;
+        profile.grants_received = profile.grants_received.saturating_add(1);
+        profile.total_earned = profile.total_earned.saturating_add(amount);
+        profile.overall_score = profile.overall_score.saturating_add(20);
         profile.level = Self::compute_level(profile.overall_score);
         env.storage().persistent().set(&key, &profile);
         Ok(())
@@ -284,7 +294,12 @@ impl ReputationRegistry {
         profile.level = Self::compute_level(profile.overall_score);
         env.storage().persistent().set(&key, &profile);
 
-        ScoreUpdated { contributor: contributor.clone(), overall_score: profile.overall_score, level: profile.level }.publish(&env);
+        ScoreUpdated {
+            contributor: contributor.clone(),
+            overall_score: profile.overall_score,
+            level: profile.level,
+        }
+        .publish(&env);
         Ok(())
     }
 
@@ -389,7 +404,7 @@ impl ReputationRegistry {
             .get(&key)
             .ok_or(Error::ProfileNotFound)?;
 
-        profile.overall_score += points;
+        profile.overall_score = profile.overall_score.saturating_add(points);
         profile.level = Self::compute_level(profile.overall_score);
         env.storage().persistent().set(&key, &profile);
 
@@ -427,7 +442,11 @@ impl ReputationRegistry {
         Self::extend_persistent_ttl(&env, &key);
         Self::extend_instance_ttl(&env);
 
-        CreditsSpent { user, remaining: credits.credits }.publish(&env);
+        CreditsSpent {
+            user,
+            remaining: credits.credits,
+        }
+        .publish(&env);
         Ok(true)
     }
 
@@ -472,7 +491,12 @@ impl ReputationRegistry {
         credits.total_earned += added;
         env.storage().persistent().set(&key, &credits);
 
-        CreditsAwarded { user, amount: added, remaining: credits.credits }.publish(&env);
+        CreditsAwarded {
+            user,
+            amount: added,
+            remaining: credits.credits,
+        }
+        .publish(&env);
         Ok(())
     }
 
@@ -511,7 +535,11 @@ impl ReputationRegistry {
         credits.last_recharge = now;
         env.storage().persistent().set(&key, &credits);
 
-        CreditsRecharged { user, remaining: credits.credits }.publish(&env);
+        CreditsRecharged {
+            user,
+            remaining: credits.credits,
+        }
+        .publish(&env);
         Ok(())
     }
 

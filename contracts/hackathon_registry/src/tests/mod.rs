@@ -160,8 +160,9 @@ fn test_full_lifecycle() {
     t.client
         .submit_project(&hid, &lead2, &String::from_str(&t.env, "ipfs://project-b"));
 
-    // Score submissions (after submission deadline)
+    // Open judging and score submissions (after submission deadline)
     t.env.ledger().set_timestamp(2500);
+    t.client.open_judging(&hid);
 
     t.client.score_submission(&hid, &judge1, &lead1, &90);
     t.client.score_submission(&hid, &judge2, &lead1, &80);
@@ -297,8 +298,9 @@ fn test_disqualify_submission() {
     t.client
         .submit_project(&hid, &lead2, &String::from_str(&t.env, "ipfs://dq-b"));
 
-    // Score - lead1 gets highest score
+    // Open judging and score - lead1 gets highest score
     t.env.ledger().set_timestamp(2500);
+    t.client.open_judging(&hid);
     t.client.score_submission(&hid, &judge, &lead1, &95);
     t.client.score_submission(&hid, &judge, &lead2, &80);
 

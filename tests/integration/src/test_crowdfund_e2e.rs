@@ -47,7 +47,10 @@ fn test_campaign_full_success_lifecycle() {
 
     // Advance through governance flow
     advance_to_campaigning(&p, cid);
-    assert_eq!(p.crowdfund.get_campaign(&cid).status, CampaignStatus::Campaigning);
+    assert_eq!(
+        p.crowdfund.get_campaign(&cid).status,
+        CampaignStatus::Campaigning
+    );
 
     // Backers pledge (fee on top via CoreEscrow.route_pledge)
     p.crowdfund.pledge(&backer1, &cid, &3_000);
@@ -112,13 +115,19 @@ fn test_campaign_failure_with_batched_refund() {
 
     // Mark as failed (permissionless)
     p.crowdfund.check_deadline(&cid);
-    assert_eq!(p.crowdfund.get_campaign(&cid).status, CampaignStatus::Failed);
+    assert_eq!(
+        p.crowdfund.get_campaign(&cid).status,
+        CampaignStatus::Failed
+    );
 
     // Process refund batch (permissionless)
     p.crowdfund.process_refund_batch(&cid);
 
     // Backer got their pledge back
-    assert_eq!(p.token.balance(&backer), backer_balance_after_pledge + 1_000);
+    assert_eq!(
+        p.token.balance(&backer),
+        backer_balance_after_pledge + 1_000
+    );
 }
 
 #[test]
@@ -147,7 +156,10 @@ fn test_campaign_cancel_with_refund() {
 
     // Admin cancels
     p.crowdfund.cancel_campaign(&cid);
-    assert_eq!(p.crowdfund.get_campaign(&cid).status, CampaignStatus::Cancelled);
+    assert_eq!(
+        p.crowdfund.get_campaign(&cid).status,
+        CampaignStatus::Cancelled
+    );
 
     // Process refund
     p.crowdfund.process_refund_batch(&cid);
@@ -177,7 +189,10 @@ fn test_milestone_rejection_and_resubmit() {
 
     // Fund it
     p.crowdfund.pledge(&backer, &cid, &2_500);
-    assert_eq!(p.crowdfund.get_campaign(&cid).status, CampaignStatus::Funded);
+    assert_eq!(
+        p.crowdfund.get_campaign(&cid).status,
+        CampaignStatus::Funded
+    );
 
     // Submit milestone 0
     p.crowdfund.submit_milestone(&cid, &0);
@@ -185,18 +200,27 @@ fn test_milestone_rejection_and_resubmit() {
     // Reject it
     p.crowdfund.reject_milestone(&cid, &0);
     let ms = p.crowdfund.get_milestone(&cid, &0);
-    assert_eq!(ms.status, crowdfund_registry::storage::MilestoneStatus::Rejected);
+    assert_eq!(
+        ms.status,
+        crowdfund_registry::storage::MilestoneStatus::Rejected
+    );
 
     // Resubmit
     p.crowdfund.submit_milestone(&cid, &0);
     let ms = p.crowdfund.get_milestone(&cid, &0);
-    assert_eq!(ms.status, crowdfund_registry::storage::MilestoneStatus::Submitted);
+    assert_eq!(
+        ms.status,
+        crowdfund_registry::storage::MilestoneStatus::Submitted
+    );
 
     // Approve and complete
     p.crowdfund.approve_milestone(&cid, &0);
     p.crowdfund.submit_milestone(&cid, &1);
     p.crowdfund.approve_milestone(&cid, &1);
-    assert_eq!(p.crowdfund.get_campaign(&cid).status, CampaignStatus::Completed);
+    assert_eq!(
+        p.crowdfund.get_campaign(&cid).status,
+        CampaignStatus::Completed
+    );
 }
 
 #[test]
@@ -254,11 +278,17 @@ fn test_governance_approval_flow() {
 
     // Submit for review → Submitted
     p.crowdfund.submit_for_review(&cid);
-    assert_eq!(p.crowdfund.get_campaign(&cid).status, CampaignStatus::Submitted);
+    assert_eq!(
+        p.crowdfund.get_campaign(&cid).status,
+        CampaignStatus::Submitted
+    );
 
     // Admin approves → creates vote session (stays Submitted)
     let session_id = p.crowdfund.approve_campaign(&cid, &1000, &1);
-    assert_eq!(p.crowdfund.get_campaign(&cid).status, CampaignStatus::Submitted);
+    assert_eq!(
+        p.crowdfund.get_campaign(&cid).status,
+        CampaignStatus::Submitted
+    );
     assert_eq!(p.crowdfund.get_vote_session(&cid), session_id);
 
     // Community votes
@@ -267,7 +297,10 @@ fn test_governance_approval_flow() {
 
     // Check threshold → Campaigning
     p.crowdfund.check_vote_threshold(&cid);
-    assert_eq!(p.crowdfund.get_campaign(&cid).status, CampaignStatus::Campaigning);
+    assert_eq!(
+        p.crowdfund.get_campaign(&cid).status,
+        CampaignStatus::Campaigning
+    );
 }
 
 #[test]
@@ -293,5 +326,8 @@ fn test_governance_rejection_flow() {
 
     // Owner can resubmit
     p.crowdfund.submit_for_review(&cid);
-    assert_eq!(p.crowdfund.get_campaign(&cid).status, CampaignStatus::Submitted);
+    assert_eq!(
+        p.crowdfund.get_campaign(&cid).status,
+        CampaignStatus::Submitted
+    );
 }

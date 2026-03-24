@@ -28,7 +28,9 @@ fn setup() -> TestEnv<'static> {
 
     // Deploy token
     let token_admin = Address::generate(&env);
-    let token_addr = env.register_stellar_asset_contract_v2(token_admin).address();
+    let token_addr = env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
     let token = TokenClient::new(&env, &token_addr);
     let sac = StellarAssetClient::new(&env, &token_addr);
 
@@ -182,11 +184,8 @@ fn test_application_flow() {
     assert_eq!(bounty.assignee, Some(applicant1.clone()));
 
     // Applicant1 submits work
-    t.bounty_client.submit_work(
-        &applicant1,
-        &bounty_id,
-        &String::from_str(&t.env, "QmWork"),
-    );
+    t.bounty_client
+        .submit_work(&applicant1, &bounty_id, &String::from_str(&t.env, "QmWork"));
 
     let bounty = t.bounty_client.get_bounty(&bounty_id);
     assert_eq!(bounty.status, BountyStatus::InReview);
@@ -220,41 +219,25 @@ fn test_contest_flow() {
     );
 
     // Pool should be locked (Contest locks at creation)
-    assert!(t.escrow_client.is_locked(
-        &t.bounty_client.get_bounty(&bounty_id).escrow_pool_id
-    ));
+    assert!(t
+        .escrow_client
+        .is_locked(&t.bounty_client.get_bounty(&bounty_id).escrow_pool_id));
 
     // Init profiles for reputation recording
     t.rep_client.init_profile(&sub1);
     t.rep_client.init_profile(&sub2);
 
     // Both submit work
-    t.bounty_client.submit_work(
-        &sub1,
-        &bounty_id,
-        &String::from_str(&t.env, "QmWork1"),
-    );
-    t.bounty_client.submit_work(
-        &sub2,
-        &bounty_id,
-        &String::from_str(&t.env, "QmWork2"),
-    );
+    t.bounty_client
+        .submit_work(&sub1, &bounty_id, &String::from_str(&t.env, "QmWork1"));
+    t.bounty_client
+        .submit_work(&sub2, &bounty_id, &String::from_str(&t.env, "QmWork2"));
 
     // Creator picks sub1 as winner with 2000, sub2 with 1000
-    t.bounty_client.approve_contest_winner(
-        &creator,
-        &bounty_id,
-        &sub1,
-        &2000,
-        &80,
-    );
-    t.bounty_client.approve_contest_winner(
-        &creator,
-        &bounty_id,
-        &sub2,
-        &1000,
-        &40,
-    );
+    t.bounty_client
+        .approve_contest_winner(&creator, &bounty_id, &sub1, &2000, &80);
+    t.bounty_client
+        .approve_contest_winner(&creator, &bounty_id, &sub2, &1000, &40);
 
     assert_eq!(t.token.balance(&sub1), 2000);
     assert_eq!(t.token.balance(&sub2), 1000);
@@ -376,8 +359,5 @@ fn test_reject_application_restores_credit() {
     assert_eq!(t.rep_client.get_credits(&applicant), 3);
 
     let app = t.bounty_client.get_application(&bounty_id, &applicant);
-    assert_eq!(
-        app.status,
-        crate::storage::ApplicationStatus::Rejected
-    );
+    assert_eq!(app.status, crate::storage::ApplicationStatus::Rejected);
 }

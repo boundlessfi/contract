@@ -29,9 +29,9 @@ fn test_hackathon_full_lifecycle() {
         &String::from_str(&p.env, "QmHackMeta"),
         &10_000,
         &p.token_addr,
-        &1000,  // registration deadline
-        &2000,  // submission deadline
-        &3000,  // judging deadline
+        &1000, // registration deadline
+        &2000, // submission deadline
+        &3000, // judging deadline
         &100,
         &prize_tiers,
     );
@@ -58,11 +58,14 @@ fn test_hackathon_full_lifecycle() {
 
     // Submit projects (between registration and submission deadlines)
     p.env.ledger().set_timestamp(1500);
-    p.hackathon.submit_project(&hid, &lead1, &String::from_str(&p.env, "ipfs://project-a"));
-    p.hackathon.submit_project(&hid, &lead2, &String::from_str(&p.env, "ipfs://project-b"));
+    p.hackathon
+        .submit_project(&hid, &lead1, &String::from_str(&p.env, "ipfs://project-a"));
+    p.hackathon
+        .submit_project(&hid, &lead2, &String::from_str(&p.env, "ipfs://project-b"));
 
-    // Score submissions (after submission deadline)
+    // Open judging and score submissions (after submission deadline)
     p.env.ledger().set_timestamp(2500);
+    p.hackathon.open_judging(&hid);
     p.hackathon.score_submission(&hid, &judge1, &lead1, &90);
     p.hackathon.score_submission(&hid, &judge2, &lead1, &80);
     p.hackathon.score_submission(&hid, &judge1, &lead2, &70);
@@ -85,7 +88,10 @@ fn test_hackathon_full_lifecycle() {
 
     p.hackathon.finalize_hackathon(&hid);
 
-    assert_eq!(p.hackathon.get_hackathon(&hid).status, HackathonStatus::Completed);
+    assert_eq!(
+        p.hackathon.get_hackathon(&hid).status,
+        HackathonStatus::Completed
+    );
 
     // Prize distribution: lead1 wins (60%), lead2 runner-up (40%)
     assert_eq!(p.token.balance(&lead1) - lead1_before, 6000);
@@ -130,7 +136,10 @@ fn test_hackathon_cancel_refunds_creator() {
     assert_eq!(p.token.balance(&creator), balance_before - 10_000);
 
     p.hackathon.cancel_hackathon(&hid);
-    assert_eq!(p.hackathon.get_hackathon(&hid).status, HackathonStatus::Cancelled);
+    assert_eq!(
+        p.hackathon.get_hackathon(&hid).status,
+        HackathonStatus::Cancelled
+    );
 
     // Full refund
     assert_eq!(p.token.balance(&creator), balance_before);
@@ -172,11 +181,14 @@ fn test_disqualify_shifts_prizes() {
     p.hackathon.register_team(&hid, &lead2);
 
     p.env.ledger().set_timestamp(1500);
-    p.hackathon.submit_project(&hid, &lead1, &String::from_str(&p.env, "ipfs://a"));
-    p.hackathon.submit_project(&hid, &lead2, &String::from_str(&p.env, "ipfs://b"));
+    p.hackathon
+        .submit_project(&hid, &lead1, &String::from_str(&p.env, "ipfs://a"));
+    p.hackathon
+        .submit_project(&hid, &lead2, &String::from_str(&p.env, "ipfs://b"));
 
-    // Score (lead1 scores higher)
+    // Open judging and score (lead1 scores higher)
     p.env.ledger().set_timestamp(2500);
+    p.hackathon.open_judging(&hid);
     p.hackathon.score_submission(&hid, &judge, &lead1, &95);
     p.hackathon.score_submission(&hid, &judge, &lead2, &80);
 

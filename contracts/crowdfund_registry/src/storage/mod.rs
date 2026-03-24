@@ -1,5 +1,15 @@
 use soroban_sdk::{contracttype, Address, BytesN, String};
 
+// Local copy of governance_voting VoteContext for cross-contract serialization.
+#[contracttype]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum VoteContext {
+    CampaignValidation,
+    RetrospectiveGrant,
+    QFRound,
+    HackathonJudging,
+}
+
 #[contracttype]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CampaignStatus {
@@ -65,7 +75,7 @@ pub enum DataKey {
     // Decomposed milestones: no Vec in Campaign struct
     CampaignMilestone(u64, u32), // campaign_id, milestone_index -> Milestone
     // Pledge tracking
-    Pledge(u64, Address),    // campaign_id, backer -> amount
+    Pledge(u64, Address), // campaign_id, backer -> amount
     // Backer list stored in batches of 50
-    BackerBatch(u64, u32),   // campaign_id, batch_index -> Vec<Address> (max 50)
+    BackerBatch(u64, u32), // campaign_id, batch_index -> Vec<Address> (max 50)
 }

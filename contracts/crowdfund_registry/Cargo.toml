@@ -5,15 +5,15 @@ edition = "2021"
 publish = false
 
 [lib]
-crate-type = ["lib"]
+crate-type = ["lib", "cdylib"]
 doctest = false
 
 [dependencies]
 soroban-sdk = { workspace = true }
 boundless-types = { workspace = true }
-core_escrow = { path = "../core_escrow" }
-reputation_registry = { path = "../reputation_registry" }
-governance_voting = { path = "../governance_voting" }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
+core_escrow = { path = "../core_escrow" }
+governance_voting = { path = "../governance_voting" }
+reputation_registry = { path = "../reputation_registry" }

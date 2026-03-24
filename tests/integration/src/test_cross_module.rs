@@ -1,8 +1,8 @@
 /// Cross-module integration test: a single contributor participates across all 4 modules
 /// and we verify unified reputation, SparkCredits, and fee accounting.
 use crate::setup::{setup_platform, Platform};
-use bounty_registry::storage::BountyType;
 use boundless_types::ActivityCategory;
+use bounty_registry::storage::BountyType;
 use soroban_sdk::testutils::{Address as _, Ledger};
 use soroban_sdk::{Address, String, Vec};
 
@@ -118,13 +118,19 @@ fn test_single_contributor_across_all_modules() {
     p.env.ledger().with_mut(|l| {
         l.timestamp += 1500;
     });
-    p.hackathon.submit_project(&hid, &contributor, &String::from_str(&p.env, "ipfs://cross"));
+    p.hackathon.submit_project(
+        &hid,
+        &contributor,
+        &String::from_str(&p.env, "ipfs://cross"),
+    );
 
-    // Score
+    // Open judging and score
     p.env.ledger().with_mut(|l| {
         l.timestamp += 600;
     });
-    p.hackathon.score_submission(&hid, &judge, &contributor, &85);
+    p.hackathon.open_judging(&hid);
+    p.hackathon
+        .score_submission(&hid, &judge, &contributor, &85);
 
     // Finalize (only 1 participant → gets 100%)
     p.env.ledger().with_mut(|l| {
@@ -238,8 +244,23 @@ fn test_all_contracts_wired_correctly() {
     assert_eq!(p.escrow.get_insurance_balance(), 0);
 
     // Verify fee config defaults
-    assert_eq!(p.escrow.get_fee_rate(&boundless_types::SubType::BountyFCFS), 500);
-    assert_eq!(p.escrow.get_fee_rate(&boundless_types::SubType::CrowdfundPledge), 500);
-    assert_eq!(p.escrow.get_fee_rate(&boundless_types::SubType::GrantMilestone), 300);
-    assert_eq!(p.escrow.get_fee_rate(&boundless_types::SubType::HackathonMain), 400);
+    assert_eq!(
+        p.escrow.get_fee_rate(&boundless_types::SubType::BountyFCFS),
+        500
+    );
+    assert_eq!(
+        p.escrow
+            .get_fee_rate(&boundless_types::SubType::CrowdfundPledge),
+        500
+    );
+    assert_eq!(
+        p.escrow
+            .get_fee_rate(&boundless_types::SubType::GrantMilestone),
+        300
+    );
+    assert_eq!(
+        p.escrow
+            .get_fee_rate(&boundless_types::SubType::HackathonMain),
+        400
+    );
 }

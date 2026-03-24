@@ -1,19 +1,25 @@
-use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, String, Vec};
+use soroban_sdk::{
+    contract, contractimpl, Address, BytesN, Env, IntoVal, String, Symbol, Val, Vec,
+};
 
 use boundless_types::ttl::{
     INSTANCE_TTL_EXTEND, INSTANCE_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND, PERSISTENT_TTL_THRESHOLD,
 };
 use boundless_types::ModuleType;
-use core_escrow::CoreEscrowClient;
-use governance_voting::storage::VoteContext;
-use governance_voting::GovernanceVotingClient;
-use reputation_registry::ReputationRegistryClient;
 
 use crate::error::Error;
-use crate::events::{GrantCompleted, GrantCreated, MilestoneApproved, MilestoneSubmitted, QFDonationMade};
+use crate::events::{
+    GrantCompleted, GrantCreated, MilestoneApproved, MilestoneSubmitted, QFDonationMade,
+};
 use crate::storage::{
     DataKey, Grant, GrantMilestone, GrantStatus, GrantType, MilestoneStatus, QFRoundData,
+    VoteContext, VoteOption,
 };
+
+// Reusable symbols for cross-contract calls (avoids importing full client ABIs)
+fn sym(env: &Env, name: &str) -> Symbol {
+    Symbol::new(env, name)
+}
 
 #[contract]
 pub struct GrantHub;
@@ -101,7 +107,7 @@ impl GrantHub {
         recipient: Address,
         amount: i128,
         asset: Address,
-        milestone_descs: Vec<(String, u32)>, // (description, pct in basis points)
+        milestone_descs: Vec<(String, u32)>,
     ) -> Result<u64, Error> {
         creator.require_auth();
 
@@ -119,31 +125,37 @@ impl GrantHub {
         }
 
         let count = Self::next_grant_id(&env);
-        let escrow = Self::escrow_client(&env);
+        let escrow_addr = Self::get_escrow_addr(&env);
 
-        let pool_id = escrow.create_pool(
-            &creator,
-            &ModuleType::Grant,
-            &count,
-            &amount,
-            &asset,
-            &(env.ledger().timestamp() + 31_536_000), // 1 year
-            &env.current_contract_address(),
+        let args: Vec<Val> = Vec::from_array(
+            &env,
+            [
+                creator.into_val(&env),
+                ModuleType::Grant.into_val(&env),
+                count.into_val(&env),
+                amount.into_val(&env),
+                asset.clone().into_val(&env),
+                (env.ledger().timestamp() + 31_536_000).into_val(&env),
+                env.current_contract_address().into_val(&env),
+            ],
         );
+        let pool_id: BytesN<32> =
+            env.invoke_contract(&escrow_addr, &sym(&env, "create_pool"), args);
 
-        // Define release slots based on milestone percentages
+        // Define release slots
         let mut slots: Vec<(Address, i128)> = Vec::new(&env);
         let milestone_count = milestone_descs.len();
         for (_, pct) in milestone_descs.iter() {
-            let slot_amount = amount
-                .checked_mul(pct as i128)
-                .ok_or(Error::Overflow)?
-                / 10000;
+            let slot_amount = amount.checked_mul(pct as i128).ok_or(Error::Overflow)? / 10000;
             slots.push_back((recipient.clone(), slot_amount));
         }
 
-        escrow.define_release_slots(&pool_id, &slots);
-        escrow.lock_pool(&pool_id);
+        let slot_args: Vec<Val> =
+            Vec::from_array(&env, [pool_id.clone().into_val(&env), slots.into_val(&env)]);
+        env.invoke_contract::<()>(&escrow_addr, &sym(&env, "define_release_slots"), slot_args);
+
+        let lock_args: Vec<Val> = Vec::from_array(&env, [pool_id.clone().into_val(&env)]);
+        env.invoke_contract::<()>(&escrow_addr, &sym(&env, "lock_pool"), lock_args);
 
         // Store milestones decomposed
         for (i, (desc, pct)) in milestone_descs.iter().enumerate() {
@@ -157,6 +169,11 @@ impl GrantHub {
                 .persistent()
                 .set(&DataKey::GrantMilestone(count, i as u32), &milestone);
         }
+
+        // Store recipient for later use when all milestones complete
+        env.storage()
+            .persistent()
+            .set(&DataKey::GrantRecipient(count), &recipient);
 
         let grant = Grant {
             id: count,
@@ -172,9 +189,7 @@ impl GrantHub {
         };
 
         let grant_key = DataKey::Grant(count);
-        env.storage()
-            .persistent()
-            .set(&grant_key, &grant);
+        env.storage().persistent().set(&grant_key, &grant);
         Self::extend_persistent_ttl(&env, &grant_key);
         Self::extend_instance_ttl(&env);
 
@@ -237,11 +252,7 @@ impl GrantHub {
         grant_id: u64,
         milestone_index: u32,
     ) -> Result<(), Error> {
-        let admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
+        let admin = Self::require_admin(&env)?;
         admin.require_auth();
 
         let mut grant: Grant = env
@@ -265,8 +276,15 @@ impl GrantHub {
         env.storage().persistent().set(&key, &milestone);
 
         // Release escrow slot
-        let escrow = Self::escrow_client(&env);
-        escrow.release_slot(&grant.pool_id, &milestone_index);
+        let escrow_addr = Self::get_escrow_addr(&env);
+        let args: Vec<Val> = Vec::from_array(
+            &env,
+            [
+                grant.pool_id.clone().into_val(&env),
+                milestone_index.into_val(&env),
+            ],
+        );
+        env.invoke_contract::<()>(&escrow_addr, &sym(&env, "release_slot"), args);
 
         MilestoneApproved {
             grant_id,
@@ -278,7 +296,7 @@ impl GrantHub {
         let mut all_done = true;
         for i in 0..grant.milestone_count {
             if i == milestone_index {
-                continue; // already updated above
+                continue;
             }
             let m: GrantMilestone = env
                 .storage()
@@ -297,23 +315,31 @@ impl GrantHub {
                 .persistent()
                 .set(&DataKey::Grant(grant_id), &grant);
 
-            // Record reputation for grant recipient
-            let rep = Self::rep_client(&env);
-            rep.record_grant_received(
-                &env.current_contract_address(),
-                &Self::get_slot_recipient(&env, &grant.pool_id),
-                &grant.amount,
+            // Get recipient from stored key
+            let recipient: Address = env
+                .storage()
+                .persistent()
+                .get(&DataKey::GrantRecipient(grant_id))
+                .ok_or(Error::GrantNotFound)?;
+
+            // Record reputation
+            let rep_addr = Self::get_rep_addr(&env);
+            let rep_args: Vec<Val> = Vec::from_array(
+                &env,
+                [
+                    env.current_contract_address().into_val(&env),
+                    recipient.into_val(&env),
+                    grant.amount.into_val(&env),
+                ],
             );
+            env.invoke_contract::<()>(&rep_addr, &sym(&env, "record_grant_received"), rep_args);
 
             GrantCompleted { grant_id }.publish(&env);
-        } else {
-            // Update grant status to Executing if not already
-            if grant.status == GrantStatus::Active {
-                grant.status = GrantStatus::Executing;
-                env.storage()
-                    .persistent()
-                    .set(&DataKey::Grant(grant_id), &grant);
-            }
+        } else if grant.status == GrantStatus::Active {
+            grant.status = GrantStatus::Executing;
+            env.storage()
+                .persistent()
+                .set(&DataKey::Grant(grant_id), &grant);
         }
 
         Ok(())
@@ -338,36 +364,46 @@ impl GrantHub {
         }
 
         let count = Self::next_grant_id(&env);
-        let escrow = Self::escrow_client(&env);
+        let escrow_addr = Self::get_escrow_addr(&env);
 
-        let pool_id = escrow.create_pool(
-            &creator,
-            &ModuleType::Grant,
-            &count,
-            &amount,
-            &asset,
-            &(env.ledger().timestamp() + 31_536_000),
-            &env.current_contract_address(),
+        let pool_args: Vec<Val> = Vec::from_array(
+            &env,
+            [
+                creator.clone().into_val(&env),
+                ModuleType::Grant.into_val(&env),
+                count.into_val(&env),
+                amount.into_val(&env),
+                asset.clone().into_val(&env),
+                (env.ledger().timestamp() + 31_536_000).into_val(&env),
+                env.current_contract_address().into_val(&env),
+            ],
         );
+        let pool_id: BytesN<32> =
+            env.invoke_contract(&escrow_addr, &sym(&env, "create_pool"), pool_args);
 
-        escrow.lock_pool(&pool_id);
+        let lock_args: Vec<Val> = Vec::from_array(&env, [pool_id.clone().into_val(&env)]);
+        env.invoke_contract::<()>(&escrow_addr, &sym(&env, "lock_pool"), lock_args);
 
         // Create governance voting session
-        let gov = Self::gov_client(&env);
+        let gov_addr = Self::get_gov_addr(&env);
         let now = env.ledger().timestamp();
-        let session_id = gov.create_session(
-            &env.current_contract_address(),
-            &VoteContext::RetrospectiveGrant,
-            &count,
-            &options,
-            &now,
-            &(now + voting_duration),
-            &None::<u32>,
-            &None::<u32>,
-            &true, // weight_by_reputation
+        let gov_args: Vec<Val> = Vec::from_array(
+            &env,
+            [
+                env.current_contract_address().into_val(&env),
+                VoteContext::RetrospectiveGrant.into_val(&env),
+                count.into_val(&env),
+                options.into_val(&env),
+                now.into_val(&env),
+                (now + voting_duration).into_val(&env),
+                None::<u32>.into_val(&env),
+                None::<u32>.into_val(&env),
+                true.into_val(&env),
+            ],
         );
+        let session_id: BytesN<32> =
+            env.invoke_contract(&gov_addr, &sym(&env, "create_session"), gov_args);
 
-        // Store session_id for this grant
         env.storage()
             .persistent()
             .set(&DataKey::RetroSession(count), &session_id);
@@ -386,9 +422,7 @@ impl GrantHub {
         };
 
         let grant_key = DataKey::Grant(count);
-        env.storage()
-            .persistent()
-            .set(&grant_key, &grant);
+        env.storage().persistent().set(&grant_key, &grant);
         Self::extend_persistent_ttl(&env, &grant_key);
         Self::extend_instance_ttl(&env);
 
@@ -408,11 +442,7 @@ impl GrantHub {
         grant_id: u64,
         recipients: Vec<Address>,
     ) -> Result<(), Error> {
-        let admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
+        let admin = Self::require_admin(&env)?;
         admin.require_auth();
 
         let mut grant: Grant = env
@@ -434,37 +464,58 @@ impl GrantHub {
             .get(&DataKey::RetroSession(grant_id))
             .ok_or(Error::NoVoteSession)?;
 
-        // Get voting results to distribute proportionally
-        let gov = Self::gov_client(&env);
-        let results = gov.get_result(&session_id);
+        // Get voting results
+        let gov_addr = Self::get_gov_addr(&env);
+        let result_args: Vec<Val> = Vec::from_array(&env, [session_id.into_val(&env)]);
+        let results: Vec<VoteOption> =
+            env.invoke_contract(&gov_addr, &sym(&env, "get_result"), result_args);
 
-        // Calculate total weighted votes
         let mut total_votes: u64 = 0;
         for opt in results.iter() {
             total_votes += opt.weighted_votes;
         }
 
-        let escrow = Self::escrow_client(&env);
-        let rep = Self::rep_client(&env);
+        let escrow_addr = Self::get_escrow_addr(&env);
+        let rep_addr = Self::get_rep_addr(&env);
 
         if total_votes > 0 {
             for (i, opt) in results.iter().enumerate() {
                 if opt.weighted_votes > 0 && (i as u32) < recipients.len() {
-                    let share = grant.amount
+                    let share = grant
+                        .amount
                         .checked_mul(opt.weighted_votes as i128)
                         .ok_or(Error::Overflow)?
                         / total_votes as i128;
                     if share > 0 {
-                        let recipient = recipients.get(i as u32).ok_or(Error::InvalidProjectIndex)?;
-                        escrow.release_partial(
-                            &grant.pool_id,
-                            &recipient,
-                            &share,
+                        let recipient =
+                            recipients.get(i as u32).ok_or(Error::InvalidProjectIndex)?;
+
+                        let release_args: Vec<Val> = Vec::from_array(
+                            &env,
+                            [
+                                grant.pool_id.clone().into_val(&env),
+                                recipient.clone().into_val(&env),
+                                share.into_val(&env),
+                            ],
                         );
-                        rep.record_grant_received(
-                            &env.current_contract_address(),
-                            &recipient,
-                            &share,
+                        env.invoke_contract::<()>(
+                            &escrow_addr,
+                            &sym(&env, "release_partial"),
+                            release_args,
+                        );
+
+                        let rep_args: Vec<Val> = Vec::from_array(
+                            &env,
+                            [
+                                env.current_contract_address().into_val(&env),
+                                recipient.into_val(&env),
+                                share.into_val(&env),
+                            ],
+                        );
+                        env.invoke_contract::<()>(
+                            &rep_addr,
+                            &sym(&env, "record_grant_received"),
+                            rep_args,
                         );
                     }
                 }
@@ -499,34 +550,45 @@ impl GrantHub {
         }
 
         let count = Self::next_grant_id(&env);
-        let escrow = Self::escrow_client(&env);
+        let escrow_addr = Self::get_escrow_addr(&env);
 
-        let pool_id = escrow.create_pool(
-            &creator,
-            &ModuleType::Grant,
-            &count,
-            &matching_pool,
-            &asset,
-            &(env.ledger().timestamp() + 31_536_000),
-            &env.current_contract_address(),
+        let pool_args: Vec<Val> = Vec::from_array(
+            &env,
+            [
+                creator.clone().into_val(&env),
+                ModuleType::Grant.into_val(&env),
+                count.into_val(&env),
+                matching_pool.into_val(&env),
+                asset.clone().into_val(&env),
+                (env.ledger().timestamp() + 31_536_000).into_val(&env),
+                env.current_contract_address().into_val(&env),
+            ],
         );
+        let pool_id: BytesN<32> =
+            env.invoke_contract(&escrow_addr, &sym(&env, "create_pool"), pool_args);
 
-        escrow.lock_pool(&pool_id);
+        let lock_args: Vec<Val> = Vec::from_array(&env, [pool_id.clone().into_val(&env)]);
+        env.invoke_contract::<()>(&escrow_addr, &sym(&env, "lock_pool"), lock_args);
 
-        // Create governance voting QF session
-        let gov = Self::gov_client(&env);
+        // Create QF session
+        let gov_addr = Self::get_gov_addr(&env);
         let now = env.ledger().timestamp();
-        let session_id = gov.create_session(
-            &env.current_contract_address(),
-            &VoteContext::QFRound,
-            &count,
-            &project_names,
-            &now,
-            &(now + duration),
-            &None::<u32>,
-            &None::<u32>,
-            &false,
+        let gov_args: Vec<Val> = Vec::from_array(
+            &env,
+            [
+                env.current_contract_address().into_val(&env),
+                VoteContext::QFRound.into_val(&env),
+                count.into_val(&env),
+                project_names.clone().into_val(&env),
+                now.into_val(&env),
+                (now + duration).into_val(&env),
+                None::<u32>.into_val(&env),
+                None::<u32>.into_val(&env),
+                false.into_val(&env),
+            ],
         );
+        let session_id: BytesN<32> =
+            env.invoke_contract(&gov_addr, &sym(&env, "create_session"), gov_args);
 
         let qf_data = QFRoundData {
             session_id,
@@ -552,9 +614,7 @@ impl GrantHub {
         };
 
         let grant_key = DataKey::Grant(count);
-        env.storage()
-            .persistent()
-            .set(&grant_key, &grant);
+        env.storage().persistent().set(&grant_key, &grant);
         Self::extend_persistent_ttl(&env, &grant_key);
         Self::extend_instance_ttl(&env);
 
@@ -596,13 +656,17 @@ impl GrantHub {
         }
 
         // Record donation in GovernanceVoting
-        let gov = Self::gov_client(&env);
-        gov.record_qf_donation(
-            &qf_data.session_id,
-            &env.current_contract_address(),
-            &amount,
-            &project_index,
+        let gov_addr = Self::get_gov_addr(&env);
+        let args: Vec<Val> = Vec::from_array(
+            &env,
+            [
+                qf_data.session_id.into_val(&env),
+                env.current_contract_address().into_val(&env),
+                amount.into_val(&env),
+                project_index.into_val(&env),
+            ],
         );
+        env.invoke_contract::<()>(&gov_addr, &sym(&env, "record_qf_donation"), args);
 
         QFDonationMade {
             grant_id,
@@ -619,11 +683,7 @@ impl GrantHub {
         grant_id: u64,
         project_addresses: Vec<Address>,
     ) -> Result<(), Error> {
-        let admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
+        let admin = Self::require_admin(&env)?;
         admin.require_auth();
 
         let mut grant: Grant = env
@@ -645,24 +705,49 @@ impl GrantHub {
             .get(&DataKey::QFRound(grant_id))
             .ok_or(Error::GrantNotFound)?;
 
-        let gov = Self::gov_client(&env);
-        let distributions = gov.compute_qf_distribution(
-            &qf_data.session_id,
-            &qf_data.matching_pool,
+        let gov_addr = Self::get_gov_addr(&env);
+        let dist_args: Vec<Val> = Vec::from_array(
+            &env,
+            [
+                qf_data.session_id.into_val(&env),
+                qf_data.matching_pool.into_val(&env),
+            ],
         );
+        let distributions: Vec<(u32, i128)> =
+            env.invoke_contract(&gov_addr, &sym(&env, "compute_qf_distribution"), dist_args);
 
-        let escrow = Self::escrow_client(&env);
-        let rep = Self::rep_client(&env);
+        let escrow_addr = Self::get_escrow_addr(&env);
+        let rep_addr = Self::get_rep_addr(&env);
 
         for (index, amount) in distributions.iter() {
             if amount > 0 {
-                let addr = project_addresses.get(index).ok_or(Error::InvalidProjectIndex)?;
-                escrow.release_partial(&grant.pool_id, &addr, &amount);
-                rep.record_grant_received(
-                    &env.current_contract_address(),
-                    &addr,
-                    &amount,
+                let addr = project_addresses
+                    .get(index)
+                    .ok_or(Error::InvalidProjectIndex)?;
+
+                let release_args: Vec<Val> = Vec::from_array(
+                    &env,
+                    [
+                        grant.pool_id.clone().into_val(&env),
+                        addr.clone().into_val(&env),
+                        amount.into_val(&env),
+                    ],
                 );
+                env.invoke_contract::<()>(
+                    &escrow_addr,
+                    &sym(&env, "release_partial"),
+                    release_args,
+                );
+
+                let rep_args: Vec<Val> = Vec::from_array(
+                    &env,
+                    [
+                        env.current_contract_address().into_val(&env),
+                        addr.into_val(&env),
+                        amount.into_val(&env),
+                    ],
+                );
+                env.invoke_contract::<()>(&rep_addr, &sym(&env, "record_grant_received"), rep_args);
             }
         }
 
@@ -696,15 +781,14 @@ impl GrantHub {
             return Err(Error::CannotCancel);
         }
 
-        let escrow = Self::escrow_client(&env);
-        escrow.refund_all(&grant.pool_id);
+        let escrow_addr = Self::get_escrow_addr(&env);
+        let args: Vec<Val> = Vec::from_array(&env, [grant.pool_id.into_val(&env)]);
+        env.invoke_contract::<()>(&escrow_addr, &sym(&env, "refund_all"), args);
 
         grant.status = GrantStatus::Cancelled;
         env.storage()
             .persistent()
             .set(&DataKey::Grant(grant_id), &grant);
-
-        Self::extend_instance_ttl(&env);
 
         Ok(())
     }
@@ -714,16 +798,10 @@ impl GrantHub {
     // ========================================================================
 
     pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
-        let admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
+        let admin = Self::require_admin(&env)?;
         admin.require_auth();
-
         env.deployer().update_current_contract_wasm(new_wasm_hash);
         Self::extend_instance_ttl(&env);
-
         Ok(())
     }
 
@@ -754,37 +832,31 @@ impl GrantHub {
         count
     }
 
-    fn escrow_client(env: &Env) -> CoreEscrowClient<'_> {
-        let addr: Address = env
-            .storage()
+    fn require_admin(env: &Env) -> Result<Address, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)
+    }
+
+    fn get_escrow_addr(env: &Env) -> Address {
+        env.storage()
             .instance()
             .get(&DataKey::CoreEscrow)
-            .expect("not initialized");
-        CoreEscrowClient::new(env, &addr)
+            .expect("not initialized")
     }
 
-    fn rep_client(env: &Env) -> ReputationRegistryClient<'_> {
-        let addr: Address = env
-            .storage()
+    fn get_rep_addr(env: &Env) -> Address {
+        env.storage()
             .instance()
             .get(&DataKey::ReputationRegistry)
-            .expect("not initialized");
-        ReputationRegistryClient::new(env, &addr)
+            .expect("not initialized")
     }
 
-    fn gov_client(env: &Env) -> GovernanceVotingClient<'_> {
-        let addr: Address = env
-            .storage()
+    fn get_gov_addr(env: &Env) -> Address {
+        env.storage()
             .instance()
             .get(&DataKey::GovernanceVoting)
-            .expect("not initialized");
-        GovernanceVotingClient::new(env, &addr)
-    }
-
-    fn get_slot_recipient(env: &Env, pool_id: &BytesN<32>) -> Address {
-        // Get the recipient from slot 0 (all milestone slots have the same recipient)
-        let escrow = Self::escrow_client(env);
-        let slot = escrow.get_slot(pool_id, &0u32);
-        slot.recipient
+            .expect("not initialized")
     }
 }

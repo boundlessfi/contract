@@ -52,25 +52,40 @@ fn test_request_milestone_revision() {
 
     // Fund
     p.crowdfund.pledge(&backer, &cid, &3_000);
-    assert_eq!(p.crowdfund.get_campaign(&cid).status, CampaignStatus::Funded);
+    assert_eq!(
+        p.crowdfund.get_campaign(&cid).status,
+        CampaignStatus::Funded
+    );
 
     // Submit milestone
     p.crowdfund.submit_milestone(&cid, &0);
-    assert_eq!(p.crowdfund.get_milestone(&cid, &0).status, MilestoneStatus::Submitted);
+    assert_eq!(
+        p.crowdfund.get_milestone(&cid, &0).status,
+        MilestoneStatus::Submitted
+    );
 
     // Admin requests revision → back to Pending
     p.crowdfund.request_milestone_revision(&cid, &0);
-    assert_eq!(p.crowdfund.get_milestone(&cid, &0).status, MilestoneStatus::Pending);
+    assert_eq!(
+        p.crowdfund.get_milestone(&cid, &0).status,
+        MilestoneStatus::Pending
+    );
 
     // Owner can resubmit
     p.crowdfund.submit_milestone(&cid, &0);
-    assert_eq!(p.crowdfund.get_milestone(&cid, &0).status, MilestoneStatus::Submitted);
+    assert_eq!(
+        p.crowdfund.get_milestone(&cid, &0).status,
+        MilestoneStatus::Submitted
+    );
 
     // Complete the full lifecycle
     p.crowdfund.approve_milestone(&cid, &0);
     p.crowdfund.submit_milestone(&cid, &1);
     p.crowdfund.approve_milestone(&cid, &1);
-    assert_eq!(p.crowdfund.get_campaign(&cid).status, CampaignStatus::Completed);
+    assert_eq!(
+        p.crowdfund.get_campaign(&cid).status,
+        CampaignStatus::Completed
+    );
 }
 
 #[test]
@@ -96,10 +111,16 @@ fn test_revision_on_disputed_milestone() {
     // Submit → Dispute → Request revision (back to Pending)
     p.crowdfund.submit_milestone(&cid, &0);
     p.crowdfund.dispute_milestone(&backer, &cid, &0);
-    assert_eq!(p.crowdfund.get_milestone(&cid, &0).status, MilestoneStatus::Disputed);
+    assert_eq!(
+        p.crowdfund.get_milestone(&cid, &0).status,
+        MilestoneStatus::Disputed
+    );
 
     p.crowdfund.request_milestone_revision(&cid, &0);
-    assert_eq!(p.crowdfund.get_milestone(&cid, &0).status, MilestoneStatus::Pending);
+    assert_eq!(
+        p.crowdfund.get_milestone(&cid, &0).status,
+        MilestoneStatus::Pending
+    );
 }
 
 // ============================================================================
@@ -212,13 +233,9 @@ fn test_qf_multi_donor_distribution() {
     project_names.push_back(String::from_str(&p.env, "Project B"));
     project_names.push_back(String::from_str(&p.env, "Project C"));
 
-    let gid = p.grant.create_qf_round(
-        &creator,
-        &30_000,
-        &p.token_addr,
-        &project_names,
-        &2_592_000,
-    );
+    let gid = p
+        .grant
+        .create_qf_round(&creator, &30_000, &p.token_addr, &project_names, &2_592_000);
 
     // Multiple donors contribute to different projects
     // Project A: 4 small donations (QF: sum of sqrt is larger than sqrt of sum)
@@ -241,7 +258,9 @@ fn test_qf_multi_donor_distribution() {
     // squared = 200_008_164
 
     // Advance past session
-    p.env.ledger().set_timestamp(p.env.ledger().timestamp() + 3_000_000);
+    p.env
+        .ledger()
+        .set_timestamp(p.env.ledger().timestamp() + 3_000_000);
 
     let proj_a = Address::generate(&p.env);
     let proj_b = Address::generate(&p.env);
@@ -264,12 +283,18 @@ fn test_qf_multi_donor_distribution() {
 
     // Total should equal matching pool (within rounding tolerance of integer division)
     let total = bal_a + bal_b + bal_c;
-    assert!(total >= 29_990 && total <= 30_000, "Total {total} should be ~30000");
+    assert!(
+        total >= 29_990 && total <= 30_000,
+        "Total {total} should be ~30000"
+    );
 
     // QF favors many small donors: Project A (3 donors × 100)
     // should get more than Project B (1 donor × 900)
     // even though total donated amounts are similar
-    assert!(bal_a > bal_b, "QF should favor many small donors over fewer large ones");
+    assert!(
+        bal_a > bal_b,
+        "QF should favor many small donors over fewer large ones"
+    );
 }
 
 // ============================================================================

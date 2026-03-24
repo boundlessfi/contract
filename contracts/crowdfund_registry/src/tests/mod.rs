@@ -139,11 +139,17 @@ fn test_governance_flow() {
 
     // Submit for review
     t.client.submit_for_review(&cid);
-    assert_eq!(t.client.get_campaign(&cid).status, CampaignStatus::Submitted);
+    assert_eq!(
+        t.client.get_campaign(&cid).status,
+        CampaignStatus::Submitted
+    );
 
     // Admin approves → creates vote session
     let session_id = t.client.approve_campaign(&cid, &1000, &1);
-    assert_eq!(t.client.get_campaign(&cid).status, CampaignStatus::Submitted);
+    assert_eq!(
+        t.client.get_campaign(&cid).status,
+        CampaignStatus::Submitted
+    );
     assert_eq!(t.client.get_vote_session(&cid), session_id);
 
     // Vote
@@ -152,7 +158,10 @@ fn test_governance_flow() {
 
     // Check threshold → Campaigning
     t.client.check_vote_threshold(&cid);
-    assert_eq!(t.client.get_campaign(&cid).status, CampaignStatus::Campaigning);
+    assert_eq!(
+        t.client.get_campaign(&cid).status,
+        CampaignStatus::Campaigning
+    );
 }
 
 #[test]

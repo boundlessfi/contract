@@ -153,11 +153,7 @@ fn test_unauthorized_module_rejected() {
     let user = Address::generate(&env);
     client.init_profile(&user);
 
-    let result = client.try_record_completion(
-        &unauthorized,
-        &user,
-        &ActivityCategory::Development,
-        &10,
-    );
+    let result =
+        client.try_record_completion(&unauthorized, &user, &ActivityCategory::Development, &10);
     assert!(result.is_err());
 }

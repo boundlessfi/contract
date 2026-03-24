@@ -108,9 +108,7 @@ impl ProjectRegistry {
         };
 
         let key = DataKey::Project(count);
-        env.storage()
-            .persistent()
-            .set(&key, &project);
+        env.storage().persistent().set(&key, &project);
         Self::extend_persistent_ttl(&env, &key);
         Self::extend_instance_ttl(&env);
 
@@ -365,10 +363,7 @@ impl ProjectRegistry {
         if rate == 0 {
             return Ok(0);
         }
-        Ok(budget
-            .checked_mul(rate as i128)
-            .ok_or(Error::Overflow)?
-            / 10_000)
+        Ok(budget.checked_mul(rate as i128).ok_or(Error::Overflow)? / 10_000)
     }
 
     /// Lock a deposit for a project. Called by the project owner before posting a bounty/campaign.

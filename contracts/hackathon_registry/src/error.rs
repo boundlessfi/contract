@@ -32,4 +32,5 @@ pub enum Error {
     TrackNotFound = 1026,
     InvalidTrackStatus = 1027,
     Overflow = 1028,
+    SubmissionPeriodNotEnded = 1029,
 }

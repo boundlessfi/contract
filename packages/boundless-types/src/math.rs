@@ -61,7 +61,10 @@ mod tests {
         assert_eq!(int_sqrt_i128(100), Some(10));
         assert_eq!(int_sqrt_i128(1_000_000), Some(1_000));
         // Large value for QF: 10^18 scaled
-        assert_eq!(int_sqrt_i128(1_000_000_000_000_000_000), Some(1_000_000_000));
+        assert_eq!(
+            int_sqrt_i128(1_000_000_000_000_000_000),
+            Some(1_000_000_000)
+        );
     }
 
     #[test]
