@@ -4,7 +4,7 @@ use crate::events::{
     SubmissionAccepted, WorkSubmitted,
 };
 use crate::storage::{Application, ApplicationStatus, Bounty, BountyStatus, BountyType, DataKey};
-use soroban_sdk::{contract, contractimpl, Address, Env, String, Vec};
+use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, String, Vec};
 
 // External clients
 use core_escrow::{CoreEscrowClient, ModuleType};
@@ -24,6 +24,11 @@ impl BountyRegistry {
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(Error::AlreadyInitialized);
         }
+
+        if Self::is_zero_address(&env, &admin) {
+            panic!("admin cannot be zero address");
+        }
+
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage()
             .instance()
@@ -34,6 +39,119 @@ impl BountyRegistry {
         env.storage().instance().set(&DataKey::BountyCount, &0u64);
         Ok(())
     }
+
+    // ========================================
+    // QUERY FUNCTIONS
+    // ========================================
+
+    pub fn get_admin(env: Env) -> Result<Address, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)
+    }
+
+    pub fn get_core_escrow(env: Env) -> Result<Address, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::CoreEscrow)
+            .ok_or(Error::NotInitialized)
+    }
+
+    pub fn get_reputation_reg(env: Env) -> Result<Address, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::ReputationRegistry)
+            .ok_or(Error::NotInitialized)
+    }
+
+    pub fn get_fee_account(env: Env) -> Result<Address, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::FeeAccount)
+            .ok_or(Error::NotInitialized)
+    }
+
+    pub fn get_treasury(env: Env) -> Result<Address, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Treasury)
+            .ok_or(Error::NotInitialized)
+    }
+
+    pub fn get_bounty(env: Env, bounty_id: u64) -> Result<Bounty, Error> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Bounty(bounty_id))
+            .ok_or(Error::BountyNotFound)
+    }
+
+    pub fn get_application(
+        env: Env,
+        bounty_id: u64,
+        applicant: Address,
+    ) -> Result<Application, Error> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Application(bounty_id, applicant))
+            .ok_or(Error::ApplicationNotFound)
+    }
+
+    // ========================================
+    // ADMINISTRATIVE FUNCTIONS
+    // ========================================
+
+    pub fn update_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+        let admin = Self::get_admin(env.clone())?;
+        admin.require_auth();
+
+        if Self::is_zero_address(&env, &new_admin) {
+            panic!("new admin cannot be zero address");
+        }
+
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        Ok(())
+    }
+
+    pub fn update_fee_account(env: Env, new_fee_account: Address) -> Result<(), Error> {
+        let admin = Self::get_admin(env.clone())?;
+        admin.require_auth();
+
+        if Self::is_zero_address(&env, &new_fee_account) {
+            panic!("new fee account cannot be zero address");
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::FeeAccount, &new_fee_account);
+        Ok(())
+    }
+
+    pub fn update_treasury(env: Env, new_treasury: Address) -> Result<(), Error> {
+        let admin = Self::get_admin(env.clone())?;
+        admin.require_auth();
+
+        if Self::is_zero_address(&env, &new_treasury) {
+            panic!("new treasury cannot be zero address");
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::Treasury, &new_treasury);
+        Ok(())
+    }
+
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
+        let admin = Self::get_admin(env.clone())?;
+        admin.require_auth();
+
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+        Ok(())
+    }
+
+    // ========================================
+    // BOUNTY REGISTRY FUNCTIONS
+    // ========================================
 
     pub fn create_bounty(
         env: Env,
@@ -452,5 +570,17 @@ impl BountyRegistry {
 
         env.storage().persistent().set(&key, &bounty);
         Ok(())
+    }
+
+    // ========================================
+    // INTERNAL HELPER FUNCTIONS
+    // ========================================
+
+    fn is_zero_address(_env: &Env, _address: &Address) -> bool {
+        // In Soroban, there isn't a native "zero address" like EVM.
+        // We can check if it's a specific placeholder if needed,
+        // but often 'require_auth' is sufficient for security.
+        // This is a placeholder implementation as requested.
+        false
     }
 }

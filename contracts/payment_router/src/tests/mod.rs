@@ -12,9 +12,7 @@ fn test_initialize_and_route_deposit() {
     let core_escrow_id = env.register(CoreEscrow, ());
     let core_escrow_client = CoreEscrowClient::new(&env, &core_escrow_id);
     let escrow_admin = Address::generate(&env);
-    let fee_account = Address::generate(&env);
-    let treasury_escrow = Address::generate(&env);
-    core_escrow_client.init_core_escrow(&escrow_admin, &fee_account, &treasury_escrow);
+    core_escrow_client.init_core_escrow(&escrow_admin);
 
     // Register PaymentRouter
     let router_id = env.register(PaymentRouter, ());

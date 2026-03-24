@@ -65,7 +65,11 @@ impl GrantHub {
         count += 1;
         env.storage().instance().set(&DataKey::GrantCount, &count);
 
-        let esc_addr: Address = env.storage().instance().get(&DataKey::CoreEscrow).ok_or(Error::NotInitialized)?;
+        let esc_addr: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::CoreEscrow)
+            .ok_or(Error::NotInitialized)?;
 
         let pool_id: BytesN<32> = env.invoke_contract(
             &esc_addr,
@@ -238,7 +242,11 @@ impl GrantHub {
             .persistent()
             .set(&DataKey::Grant(grant_id), &grant);
 
-        let esc_addr: Address = env.storage().instance().get(&DataKey::CoreEscrow).ok_or(Error::NotInitialized)?;
+        let esc_addr: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::CoreEscrow)
+            .ok_or(Error::NotInitialized)?;
         env.invoke_contract::<()>(
             &esc_addr,
             &Symbol::new(&env, "release_slot"),
@@ -287,7 +295,11 @@ impl GrantHub {
         count += 1;
         env.storage().instance().set(&DataKey::GrantCount, &count);
 
-        let esc_addr: Address = env.storage().instance().get(&DataKey::CoreEscrow).ok_or(Error::NotInitialized)?;
+        let esc_addr: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::CoreEscrow)
+            .ok_or(Error::NotInitialized)?;
         let pool_id: BytesN<32> = env.invoke_contract(
             &esc_addr,
             &Symbol::new(&env, "create_pool"),
@@ -381,7 +393,11 @@ impl GrantHub {
             .persistent()
             .set(&DataKey::Grant(grant_id), &grant);
 
-        let esc_addr: Address = env.storage().instance().get(&DataKey::CoreEscrow).ok_or(Error::NotInitialized)?;
+        let esc_addr: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::CoreEscrow)
+            .ok_or(Error::NotInitialized)?;
         env.invoke_contract::<()>(
             &esc_addr,
             &Symbol::new(&env, "release_partial"),
@@ -430,7 +446,11 @@ impl GrantHub {
         count += 1;
         env.storage().instance().set(&DataKey::GrantCount, &count);
 
-        let esc_addr: Address = env.storage().instance().get(&DataKey::CoreEscrow).ok_or(Error::NotInitialized)?;
+        let esc_addr: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::CoreEscrow)
+            .ok_or(Error::NotInitialized)?;
         let pool_id: BytesN<32> = env.invoke_contract(
             &esc_addr,
             &Symbol::new(&env, "create_pool"),
@@ -518,10 +538,18 @@ impl GrantHub {
         let distributions: Vec<(u32, i128)> = env.invoke_contract(
             &gov_addr,
             &Symbol::new(&env, "compute_qf_distribution"),
-            (grant.vote_session_id.clone().ok_or(Error::GrantNotFound)?, grant.total_budget).into_val(&env),
+            (
+                grant.vote_session_id.clone().ok_or(Error::GrantNotFound)?,
+                grant.total_budget,
+            )
+                .into_val(&env),
         );
 
-        let esc_addr: Address = env.storage().instance().get(&DataKey::CoreEscrow).ok_or(Error::NotInitialized)?;
+        let esc_addr: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::CoreEscrow)
+            .ok_or(Error::NotInitialized)?;
         for dist in distributions.iter() {
             let (index, amount) = dist;
             let addr = project_addresses.get(index).unwrap();
@@ -567,5 +595,126 @@ impl GrantHub {
             .persistent()
             .get(&DataKey::Grant(grant_id))
             .ok_or(Error::GrantNotFound)
+    }
+
+    // ========================================
+    // QUERY FUNCTIONS
+    // ========================================
+
+    pub fn get_admin(env: Env) -> Result<Address, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)
+    }
+
+    pub fn get_project_reg(env: Env) -> Result<Address, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::ProjectRegistry)
+            .ok_or(Error::NotInitialized)
+    }
+
+    pub fn get_core_escrow(env: Env) -> Result<Address, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::CoreEscrow)
+            .ok_or(Error::NotInitialized)
+    }
+
+    pub fn get_governance_voting(env: Env) -> Result<Address, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::GovernanceVoting)
+            .ok_or(Error::NotInitialized)
+    }
+
+    pub fn get_reputation_reg(env: Env) -> Result<Address, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::ReputationRegistry)
+            .ok_or(Error::NotInitialized)
+    }
+
+    pub fn get_payment_router(env: Env) -> Result<Address, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::PaymentRouter)
+            .ok_or(Error::NotInitialized)
+    }
+
+    pub fn get_fee_account(env: Env) -> Result<Address, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::FeeAccount)
+            .ok_or(Error::NotInitialized)
+    }
+
+    pub fn get_treasury(env: Env) -> Result<Address, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Treasury)
+            .ok_or(Error::NotInitialized)
+    }
+
+    // ========================================
+    // ADMINISTRATIVE FUNCTIONS
+    // ========================================
+
+    pub fn update_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+        let admin = Self::get_admin(env.clone())?;
+        admin.require_auth();
+
+        if Self::is_zero_address(&env, &new_admin) {
+            panic!("new admin cannot be zero address");
+        }
+
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        Ok(())
+    }
+
+    pub fn update_fee_account(env: Env, new_fee_account: Address) -> Result<(), Error> {
+        let admin = Self::get_admin(env.clone())?;
+        admin.require_auth();
+
+        if Self::is_zero_address(&env, &new_fee_account) {
+            panic!("new fee account cannot be zero address");
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::FeeAccount, &new_fee_account);
+        Ok(())
+    }
+
+    pub fn update_treasury(env: Env, new_treasury: Address) -> Result<(), Error> {
+        let admin = Self::get_admin(env.clone())?;
+        admin.require_auth();
+
+        if Self::is_zero_address(&env, &new_treasury) {
+            panic!("new treasury cannot be zero address");
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::Treasury, &new_treasury);
+        Ok(())
+    }
+
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
+        let admin = Self::get_admin(env.clone())?;
+        admin.require_auth();
+
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+        Ok(())
+    }
+
+    // ========================================
+    // INTERNAL HELPERS
+    // ========================================
+
+    fn is_zero_address(_env: &Env, _address: &Address) -> bool {
+        // Placeholder as Soroban lacks a native zero address.
+        false
     }
 }

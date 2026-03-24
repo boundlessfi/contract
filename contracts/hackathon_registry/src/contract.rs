@@ -295,7 +295,11 @@ impl HackathonRegistry {
             .ok_or(Error::HackathonNotFound)?;
         hackathon.organizer.require_auth();
 
-        let esc_addr: Address = env.storage().instance().get(&DataKey::CoreEscrow).ok_or(Error::NotInitialized)?;
+        let esc_addr: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::CoreEscrow)
+            .ok_or(Error::NotInitialized)?;
         let rep_addr: Address = env
             .storage()
             .instance()
@@ -351,5 +355,119 @@ impl HackathonRegistry {
             .persistent()
             .get(&DataKey::Submission(id, lead))
             .ok_or(Error::NotFound)
+    }
+
+    // ========================================
+    // QUERY FUNCTIONS
+    // ========================================
+
+    pub fn get_admin(env: Env) -> Result<Address, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)
+    }
+
+    pub fn get_project_reg(env: Env) -> Result<Address, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::ProjectRegistry)
+            .ok_or(Error::NotInitialized)
+    }
+
+    pub fn get_core_escrow(env: Env) -> Result<Address, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::CoreEscrow)
+            .ok_or(Error::NotInitialized)
+    }
+
+    pub fn get_voting_contract(env: Env) -> Result<Address, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::VotingContract)
+            .ok_or(Error::NotInitialized)
+    }
+
+    pub fn get_reputation_reg(env: Env) -> Result<Address, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::ReputationRegistry)
+            .ok_or(Error::NotInitialized)
+    }
+
+    pub fn get_fee_account(env: Env) -> Result<Address, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::FeeAccount)
+            .ok_or(Error::NotInitialized)
+    }
+
+    pub fn get_treasury(env: Env) -> Result<Address, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Treasury)
+            .ok_or(Error::NotInitialized)
+    }
+
+    // ========================================
+    // ADMINISTRATIVE FUNCTIONS
+    // ========================================
+
+    pub fn update_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+        let admin = Self::get_admin(env.clone())?;
+        admin.require_auth();
+
+        if Self::is_zero_address(&env, &new_admin) {
+            panic!("new admin cannot be zero address");
+        }
+
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        Ok(())
+    }
+
+    pub fn update_fee_account(env: Env, new_fee_account: Address) -> Result<(), Error> {
+        let admin = Self::get_admin(env.clone())?;
+        admin.require_auth();
+
+        if Self::is_zero_address(&env, &new_fee_account) {
+            panic!("new fee account cannot be zero address");
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::FeeAccount, &new_fee_account);
+        Ok(())
+    }
+
+    pub fn update_treasury(env: Env, new_treasury: Address) -> Result<(), Error> {
+        let admin = Self::get_admin(env.clone())?;
+        admin.require_auth();
+
+        if Self::is_zero_address(&env, &new_treasury) {
+            panic!("new treasury cannot be zero address");
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::Treasury, &new_treasury);
+        Ok(())
+    }
+
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
+        let admin = Self::get_admin(env.clone())?;
+        admin.require_auth();
+
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+        Ok(())
+    }
+
+    // ========================================
+    // INTERNAL HELPERS
+    // ========================================
+
+    fn is_zero_address(_env: &Env, _address: &Address) -> bool {
+        // Placeholder as Soroban lacks a native zero address.
+        false
     }
 }

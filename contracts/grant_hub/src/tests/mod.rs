@@ -23,9 +23,7 @@ fn setup_env() -> (
 
     let esc_id = env.register(CoreEscrow, ());
     let esc_client = CoreEscrowClient::new(&env, &esc_id);
-    let fee_account = Address::generate(&env);
-    let treasury_escrow = Address::generate(&env);
-    esc_client.init_core_escrow(&admin, &fee_account, &treasury_escrow);
+    esc_client.init_core_escrow(&admin);
 
     let rep_id = env.register(ReputationRegistry, ());
     let rep_client = ReputationRegistryClient::new(&env, &rep_id);

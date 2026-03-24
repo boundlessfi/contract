@@ -1,16 +1,20 @@
 [workspace]
 resolver = "2"
 members = [
+  "packages/boundless-types",
   "contracts/core_escrow",
-  "contracts/payment_router",
-  "contracts/project_registry",
   "contracts/reputation_registry",
   "contracts/governance_voting",
-  "contracts/bounty_registry", "contracts/hackathon_registry", "contracts/crowdfund_registry", "contracts/grant_hub",
+  "contracts/project_registry",
+  "contracts/bounty_registry",
+  "contracts/crowdfund_registry",
+  "contracts/grant_hub",
+  "contracts/hackathon_registry",
 ]
 
 [workspace.dependencies]
-soroban-sdk = "23"
+soroban-sdk = "22"
+boundless-types = { path = "packages/boundless-types" }
 
 [profile.release]
 opt-level = "z"

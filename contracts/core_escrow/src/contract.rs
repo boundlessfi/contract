@@ -10,12 +10,7 @@ pub struct CoreEscrow;
 
 #[contractimpl]
 impl CoreEscrow {
-    pub fn init_core_escrow(
-        env: Env,
-        admin: Address,
-        fee_account: Address,
-        treasury: Address,
-    ) -> Result<(), Error> {
+    pub fn init_core_escrow(env: Env, admin: Address) -> Result<(), Error> {
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(Error::AlreadyInitialized);
         }
@@ -23,18 +18,8 @@ impl CoreEscrow {
         if Self::is_zero_address(&env, &admin) {
             panic!("admin cannot be zero address");
         }
-        if Self::is_zero_address(&env, &fee_account) {
-            panic!("fee account cannot be zero address");
-        }
-        if Self::is_zero_address(&env, &treasury) {
-            panic!("treasury cannot be zero address");
-        }
 
         env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage()
-            .instance()
-            .set(&DataKey::FeeAccount, &fee_account);
-        env.storage().instance().set(&DataKey::Treasury, &treasury);
 
         Ok(())
     }

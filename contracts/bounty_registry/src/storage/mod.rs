@@ -60,6 +60,8 @@ pub enum DataKey {
     CoreEscrow,
     ReputationRegistry,
     BountyCount,
+    FeeAccount,
+    Treasury,
     Bounty(u64),
     Application(u64, Address), // bounty_id, applicant -> Application
 }

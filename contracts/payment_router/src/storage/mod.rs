@@ -15,5 +15,6 @@ pub enum DataKey {
     Admin,
     Treasury,
     CoreEscrow,
+    FeeAccount,
     FeeRate(ModuleType),
 }

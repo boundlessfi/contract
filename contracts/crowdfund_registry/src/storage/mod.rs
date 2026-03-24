@@ -68,6 +68,8 @@ pub enum DataKey {
     VotingContract,
     ReputationRegistry,
     PaymentRouter,
+    FeeAccount,
+    Treasury,
     CampaignCount,
     Campaign(u64),
     Pledge(u64, Address), // campaign_id, contributor -> amount

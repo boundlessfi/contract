@@ -67,6 +67,8 @@ pub struct QFDonation {
 pub enum DataKey {
     Admin,
     ReputationRegistry,
+    FeeAccount,
+    Treasury,
     Session(BytesN<32>),
     Option(BytesN<32>, u32),        // session_id, option_id -> VoteOption
     OptionCount(BytesN<32>),        // session_id -> u32

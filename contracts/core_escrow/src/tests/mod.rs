@@ -13,9 +13,7 @@ fn test_initialize_and_create_pool() {
     let client = CoreEscrowClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    let fee_account = Address::generate(&env);
-    let treasury = Address::generate(&env);
-    client.init_core_escrow(&admin, &fee_account, &treasury);
+    client.init_core_escrow(&admin);
 
     let owner = Address::generate(&env);
     let token_admin = Address::generate(&env);

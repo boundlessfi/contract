@@ -83,6 +83,8 @@ pub enum DataKey {
     CoreEscrow,
     VotingContract,
     ReputationRegistry,
+    FeeAccount,
+    Treasury,
     HackathonCount,
     Hackathon(u64),
     Track(u64, u32), // hackathon_id, track_id

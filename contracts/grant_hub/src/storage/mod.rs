@@ -65,6 +65,8 @@ pub enum DataKey {
     GovernanceVoting,
     ReputationRegistry,
     PaymentRouter,
+    FeeAccount,
+    Treasury,
     GrantCount,
     Grant(u64),
 }
