@@ -1,9 +1,11 @@
-use crate::error::Error;
+use crate::error::BountyError;
 use crate::events::{
     ApplicationRejected, BountyApplied, BountyAssigned, BountyCancelled, BountyClaimed,
     BountyCreated, SplitApproved, SubmissionApproved, WorkSubmitted,
 };
-use crate::storage::{Application, ApplicationStatus, Bounty, BountyStatus, BountyType, DataKey};
+use crate::storage::{
+    Application, ApplicationStatus, Bounty, BountyDataKey, BountyStatus, BountyType,
+};
 use boundless_types::ttl::{
     INSTANCE_TTL_EXTEND, INSTANCE_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND, PERSISTENT_TTL_THRESHOLD,
 };
@@ -30,19 +32,21 @@ impl BountyRegistry {
         admin: Address,
         core_escrow: Address,
         reputation_registry: Address,
-    ) -> Result<(), Error> {
-        if env.storage().instance().has(&DataKey::Admin) {
-            return Err(Error::AlreadyInitialized);
+    ) -> Result<(), BountyError> {
+        if env.storage().instance().has(&BountyDataKey::Admin) {
+            return Err(BountyError::AlreadyInitialized);
         }
         admin.require_auth();
-        env.storage().instance().set(&DataKey::Admin, &admin);
+        env.storage().instance().set(&BountyDataKey::Admin, &admin);
         env.storage()
             .instance()
-            .set(&DataKey::CoreEscrow, &core_escrow);
+            .set(&BountyDataKey::CoreEscrow, &core_escrow);
         env.storage()
             .instance()
-            .set(&DataKey::ReputationRegistry, &reputation_registry);
-        env.storage().instance().set(&DataKey::BountyCount, &0u64);
+            .set(&BountyDataKey::ReputationRegistry, &reputation_registry);
+        env.storage()
+            .instance()
+            .set(&BountyDataKey::BountyCount, &0u64);
         Self::extend_instance_ttl(&env);
         Ok(())
     }
@@ -51,13 +55,13 @@ impl BountyRegistry {
     // QUERIES
     // ========================================================================
 
-    pub fn get_bounty(env: Env, bounty_id: u64) -> Result<Bounty, Error> {
-        let key = DataKey::Bounty(bounty_id);
+    pub fn get_bounty(env: Env, bounty_id: u64) -> Result<Bounty, BountyError> {
+        let key = BountyDataKey::Bounty(bounty_id);
         let bounty = env
             .storage()
             .persistent()
             .get(&key)
-            .ok_or(Error::BountyNotFound)?;
+            .ok_or(BountyError::BountyNotFound)?;
         Self::extend_persistent_ttl(&env, &key);
         Self::extend_instance_ttl(&env);
         Ok(bounty)
@@ -67,17 +71,17 @@ impl BountyRegistry {
         env: Env,
         bounty_id: u64,
         applicant: Address,
-    ) -> Result<Application, Error> {
+    ) -> Result<Application, BountyError> {
         env.storage()
             .persistent()
-            .get(&DataKey::Application(bounty_id, applicant))
-            .ok_or(Error::ApplicationNotFound)
+            .get(&BountyDataKey::Application(bounty_id, applicant))
+            .ok_or(BountyError::ApplicationNotFound)
     }
 
     pub fn get_bounty_count(env: Env) -> u64 {
         env.storage()
             .instance()
-            .get(&DataKey::BountyCount)
+            .get(&BountyDataKey::BountyCount)
             .unwrap_or(0)
     }
 
@@ -95,23 +99,25 @@ impl BountyRegistry {
         asset: Address,
         category: ActivityCategory,
         deadline: u64,
-    ) -> Result<u64, Error> {
+    ) -> Result<u64, BountyError> {
         creator.require_auth();
 
         if amount <= 0 {
-            return Err(Error::AmountNotPositive);
+            return Err(BountyError::AmountNotPositive);
         }
         if deadline <= env.ledger().timestamp() {
-            return Err(Error::DeadlinePassed);
+            return Err(BountyError::DeadlinePassed);
         }
 
         let mut count: u64 = env
             .storage()
             .instance()
-            .get(&DataKey::BountyCount)
+            .get(&BountyDataKey::BountyCount)
             .unwrap_or(0);
         count += 1;
-        env.storage().instance().set(&DataKey::BountyCount, &count);
+        env.storage()
+            .instance()
+            .set(&BountyDataKey::BountyCount, &count);
 
         let escrow_addr = Self::get_escrow_addr(&env)?;
 
@@ -153,7 +159,7 @@ impl BountyRegistry {
             winner_count: 0,
         };
 
-        let key = DataKey::Bounty(count);
+        let key = BountyDataKey::Bounty(count);
         env.storage().persistent().set(&key, &bounty);
         Self::extend_persistent_ttl(&env, &key);
         Self::extend_instance_ttl(&env);
@@ -171,24 +177,24 @@ impl BountyRegistry {
     // FCFS FLOW: claim → approve
     // ========================================================================
 
-    pub fn claim_bounty(env: Env, contributor: Address, bounty_id: u64) -> Result<(), Error> {
+    pub fn claim_bounty(env: Env, contributor: Address, bounty_id: u64) -> Result<(), BountyError> {
         contributor.require_auth();
 
-        let key = DataKey::Bounty(bounty_id);
+        let key = BountyDataKey::Bounty(bounty_id);
         let mut bounty: Bounty = env
             .storage()
             .persistent()
             .get(&key)
-            .ok_or(Error::BountyNotFound)?;
+            .ok_or(BountyError::BountyNotFound)?;
 
         if bounty.bounty_type != BountyType::FCFS {
-            return Err(Error::InvalidSubType);
+            return Err(BountyError::InvalidSubType);
         }
         if bounty.status != BountyStatus::Open {
-            return Err(Error::BountyNotOpen);
+            return Err(BountyError::BountyNotOpen);
         }
         if env.ledger().timestamp() > bounty.deadline {
-            return Err(Error::DeadlinePassed);
+            return Err(BountyError::DeadlinePassed);
         }
 
         // Spend 1 SparkCredit
@@ -204,7 +210,7 @@ impl BountyRegistry {
         let had_credit: bool =
             env.invoke_contract(&rep_addr, &sym(&env, "spend_credit"), spend_args);
         if !had_credit {
-            return Err(Error::InsufficientCredits);
+            return Err(BountyError::InsufficientCredits);
         }
 
         // Lock escrow and define single release slot
@@ -244,27 +250,27 @@ impl BountyRegistry {
         creator: Address,
         bounty_id: u64,
         points: u32,
-    ) -> Result<(), Error> {
+    ) -> Result<(), BountyError> {
         creator.require_auth();
 
-        let key = DataKey::Bounty(bounty_id);
+        let key = BountyDataKey::Bounty(bounty_id);
         let mut bounty: Bounty = env
             .storage()
             .persistent()
             .get(&key)
-            .ok_or(Error::BountyNotFound)?;
+            .ok_or(BountyError::BountyNotFound)?;
 
         if bounty.creator != creator {
-            return Err(Error::NotCreator);
+            return Err(BountyError::NotCreator);
         }
         if bounty.bounty_type != BountyType::FCFS {
-            return Err(Error::InvalidSubType);
+            return Err(BountyError::InvalidSubType);
         }
         if bounty.status != BountyStatus::InProgress {
-            return Err(Error::NotInProgress);
+            return Err(BountyError::NotInProgress);
         }
 
-        let winner = bounty.assignee.clone().ok_or(Error::NotAssignee)?;
+        let winner = bounty.assignee.clone().ok_or(BountyError::NotAssignee)?;
 
         // Release escrow
         let escrow_addr = Self::get_escrow_addr(&env)?;
@@ -319,28 +325,28 @@ impl BountyRegistry {
         applicant: Address,
         bounty_id: u64,
         proposal: String,
-    ) -> Result<(), Error> {
+    ) -> Result<(), BountyError> {
         applicant.require_auth();
 
         let bounty: Bounty = env
             .storage()
             .persistent()
-            .get(&DataKey::Bounty(bounty_id))
-            .ok_or(Error::BountyNotFound)?;
+            .get(&BountyDataKey::Bounty(bounty_id))
+            .ok_or(BountyError::BountyNotFound)?;
 
         if bounty.bounty_type != BountyType::Application {
-            return Err(Error::InvalidSubType);
+            return Err(BountyError::InvalidSubType);
         }
         if bounty.status != BountyStatus::Open {
-            return Err(Error::BountyNotOpen);
+            return Err(BountyError::BountyNotOpen);
         }
         if env.ledger().timestamp() > bounty.deadline {
-            return Err(Error::DeadlinePassed);
+            return Err(BountyError::DeadlinePassed);
         }
 
-        let app_key = DataKey::Application(bounty_id, applicant.clone());
+        let app_key = BountyDataKey::Application(bounty_id, applicant.clone());
         if env.storage().persistent().has(&app_key) {
-            return Err(Error::AlreadyApplied);
+            return Err(BountyError::AlreadyApplied);
         }
 
         // Spend 1 SparkCredit
@@ -356,7 +362,7 @@ impl BountyRegistry {
         let had_credit: bool =
             env.invoke_contract(&rep_addr, &sym(&env, "spend_credit"), spend_args);
         if !had_credit {
-            return Err(Error::InsufficientCredits);
+            return Err(BountyError::InsufficientCredits);
         }
 
         let app = Application {
@@ -374,14 +380,14 @@ impl BountyRegistry {
         let app_count: u32 = env
             .storage()
             .persistent()
-            .get(&DataKey::ApplicantCount(bounty_id))
+            .get(&BountyDataKey::ApplicantCount(bounty_id))
             .unwrap_or(0);
         env.storage()
             .persistent()
-            .set(&DataKey::Applicant(bounty_id, app_count), &applicant);
+            .set(&BountyDataKey::Applicant(bounty_id, app_count), &applicant);
         env.storage()
             .persistent()
-            .set(&DataKey::ApplicantCount(bounty_id), &(app_count + 1));
+            .set(&BountyDataKey::ApplicantCount(bounty_id), &(app_count + 1));
 
         BountyApplied {
             bounty_id,
@@ -397,35 +403,35 @@ impl BountyRegistry {
         creator: Address,
         bounty_id: u64,
         applicant: Address,
-    ) -> Result<(), Error> {
+    ) -> Result<(), BountyError> {
         creator.require_auth();
 
-        let key = DataKey::Bounty(bounty_id);
+        let key = BountyDataKey::Bounty(bounty_id);
         let mut bounty: Bounty = env
             .storage()
             .persistent()
             .get(&key)
-            .ok_or(Error::BountyNotFound)?;
+            .ok_or(BountyError::BountyNotFound)?;
 
         if bounty.creator != creator {
-            return Err(Error::NotCreator);
+            return Err(BountyError::NotCreator);
         }
         if bounty.bounty_type != BountyType::Application {
-            return Err(Error::InvalidSubType);
+            return Err(BountyError::InvalidSubType);
         }
         if bounty.status != BountyStatus::Open {
-            return Err(Error::BountyNotOpen);
+            return Err(BountyError::BountyNotOpen);
         }
 
-        let app_key = DataKey::Application(bounty_id, applicant.clone());
+        let app_key = BountyDataKey::Application(bounty_id, applicant.clone());
         let mut app: Application = env
             .storage()
             .persistent()
             .get(&app_key)
-            .ok_or(Error::ApplicationNotFound)?;
+            .ok_or(BountyError::ApplicationNotFound)?;
 
         if app.status != ApplicationStatus::Pending {
-            return Err(Error::ApplicationNotPending);
+            return Err(BountyError::ApplicationNotPending);
         }
 
         app.status = ApplicationStatus::Accepted;
@@ -454,13 +460,13 @@ impl BountyRegistry {
         let app_count: u32 = env
             .storage()
             .persistent()
-            .get(&DataKey::ApplicantCount(bounty_id))
+            .get(&BountyDataKey::ApplicantCount(bounty_id))
             .unwrap_or(0);
         for i in 0..app_count {
             if let Some(addr) = env
                 .storage()
                 .persistent()
-                .get::<_, Address>(&DataKey::Applicant(bounty_id, i))
+                .get::<_, Address>(&BountyDataKey::Applicant(bounty_id, i))
             {
                 if addr != applicant {
                     let restore_args: Vec<Val> = Vec::from_array(
@@ -476,7 +482,7 @@ impl BountyRegistry {
                         restore_args,
                     );
                     // Mark rejected
-                    let other_key = DataKey::Application(bounty_id, addr);
+                    let other_key = BountyDataKey::Application(bounty_id, addr);
                     if let Some(mut other_app) =
                         env.storage().persistent().get::<_, Application>(&other_key)
                     {
@@ -505,37 +511,37 @@ impl BountyRegistry {
         contributor: Address,
         bounty_id: u64,
         work_cid: String,
-    ) -> Result<(), Error> {
+    ) -> Result<(), BountyError> {
         contributor.require_auth();
 
-        let key = DataKey::Bounty(bounty_id);
+        let key = BountyDataKey::Bounty(bounty_id);
         let mut bounty: Bounty = env
             .storage()
             .persistent()
             .get(&key)
-            .ok_or(Error::BountyNotFound)?;
+            .ok_or(BountyError::BountyNotFound)?;
 
         if env.ledger().timestamp() > bounty.deadline {
-            return Err(Error::DeadlinePassed);
+            return Err(BountyError::DeadlinePassed);
         }
 
         match bounty.bounty_type {
             BountyType::Application => {
                 if bounty.assignee != Some(contributor.clone()) {
-                    return Err(Error::NotAssignee);
+                    return Err(BountyError::NotAssignee);
                 }
                 if bounty.status != BountyStatus::InProgress {
-                    return Err(Error::NotInProgress);
+                    return Err(BountyError::NotInProgress);
                 }
                 bounty.status = BountyStatus::InReview;
             }
             BountyType::Contest => {
                 if bounty.status != BountyStatus::Open {
-                    return Err(Error::BountyNotOpen);
+                    return Err(BountyError::BountyNotOpen);
                 }
-                let app_key = DataKey::Application(bounty_id, contributor.clone());
+                let app_key = BountyDataKey::Application(bounty_id, contributor.clone());
                 if env.storage().persistent().has(&app_key) {
-                    return Err(Error::AlreadyApplied);
+                    return Err(BountyError::AlreadyApplied);
                 }
                 let app = Application {
                     bounty_id,
@@ -547,7 +553,7 @@ impl BountyRegistry {
                 env.storage().persistent().set(&app_key, &app);
             }
             _ => {
-                return Err(Error::InvalidSubType);
+                return Err(BountyError::InvalidSubType);
             }
         }
 
@@ -567,27 +573,27 @@ impl BountyRegistry {
         creator: Address,
         bounty_id: u64,
         points: u32,
-    ) -> Result<(), Error> {
+    ) -> Result<(), BountyError> {
         creator.require_auth();
 
-        let key = DataKey::Bounty(bounty_id);
+        let key = BountyDataKey::Bounty(bounty_id);
         let mut bounty: Bounty = env
             .storage()
             .persistent()
             .get(&key)
-            .ok_or(Error::BountyNotFound)?;
+            .ok_or(BountyError::BountyNotFound)?;
 
         if bounty.creator != creator {
-            return Err(Error::NotCreator);
+            return Err(BountyError::NotCreator);
         }
         if bounty.bounty_type != BountyType::Application {
-            return Err(Error::InvalidSubType);
+            return Err(BountyError::InvalidSubType);
         }
         if bounty.status != BountyStatus::InReview {
-            return Err(Error::NotReviewable);
+            return Err(BountyError::NotReviewable);
         }
 
-        let winner = bounty.assignee.clone().ok_or(Error::NotAssignee)?;
+        let winner = bounty.assignee.clone().ok_or(BountyError::NotAssignee)?;
 
         // Release escrow
         let escrow_addr = Self::get_escrow_addr(&env)?;
@@ -644,30 +650,30 @@ impl BountyRegistry {
         winner: Address,
         payout_amount: i128,
         points: u32,
-    ) -> Result<(), Error> {
+    ) -> Result<(), BountyError> {
         creator.require_auth();
 
-        let key = DataKey::Bounty(bounty_id);
+        let key = BountyDataKey::Bounty(bounty_id);
         let mut bounty: Bounty = env
             .storage()
             .persistent()
             .get(&key)
-            .ok_or(Error::BountyNotFound)?;
+            .ok_or(BountyError::BountyNotFound)?;
 
         if bounty.creator != creator {
-            return Err(Error::NotCreator);
+            return Err(BountyError::NotCreator);
         }
         if bounty.bounty_type != BountyType::Contest {
-            return Err(Error::NotContestType);
+            return Err(BountyError::NotContestType);
         }
         if bounty.status != BountyStatus::Open && bounty.status != BountyStatus::InProgress {
-            return Err(Error::BountyNotOpen);
+            return Err(BountyError::BountyNotOpen);
         }
 
         // Verify submission exists
-        let app_key = DataKey::Application(bounty_id, winner.clone());
+        let app_key = BountyDataKey::Application(bounty_id, winner.clone());
         if !env.storage().persistent().has(&app_key) {
-            return Err(Error::ApplicationNotFound);
+            return Err(BountyError::ApplicationNotFound);
         }
 
         // Release partial from escrow
@@ -715,21 +721,21 @@ impl BountyRegistry {
         Ok(())
     }
 
-    pub fn finalize_contest(env: Env, creator: Address, bounty_id: u64) -> Result<(), Error> {
+    pub fn finalize_contest(env: Env, creator: Address, bounty_id: u64) -> Result<(), BountyError> {
         creator.require_auth();
 
-        let key = DataKey::Bounty(bounty_id);
+        let key = BountyDataKey::Bounty(bounty_id);
         let mut bounty: Bounty = env
             .storage()
             .persistent()
             .get(&key)
-            .ok_or(Error::BountyNotFound)?;
+            .ok_or(BountyError::BountyNotFound)?;
 
         if bounty.creator != creator {
-            return Err(Error::NotCreator);
+            return Err(BountyError::NotCreator);
         }
         if bounty.bounty_type != BountyType::Contest {
-            return Err(Error::NotContestType);
+            return Err(BountyError::NotContestType);
         }
 
         // Refund remaining escrow to creator
@@ -753,24 +759,24 @@ impl BountyRegistry {
         creator: Address,
         bounty_id: u64,
         slots: Vec<(Address, i128)>,
-    ) -> Result<(), Error> {
+    ) -> Result<(), BountyError> {
         creator.require_auth();
 
-        let key = DataKey::Bounty(bounty_id);
+        let key = BountyDataKey::Bounty(bounty_id);
         let bounty: Bounty = env
             .storage()
             .persistent()
             .get(&key)
-            .ok_or(Error::BountyNotFound)?;
+            .ok_or(BountyError::BountyNotFound)?;
 
         if bounty.creator != creator {
-            return Err(Error::NotCreator);
+            return Err(BountyError::NotCreator);
         }
         if bounty.bounty_type != BountyType::Split {
-            return Err(Error::NotSplitType);
+            return Err(BountyError::NotSplitType);
         }
         if bounty.status != BountyStatus::Open {
-            return Err(Error::BountyNotOpen);
+            return Err(BountyError::BountyNotOpen);
         }
 
         // Validate total doesn't exceed bounty amount
@@ -779,14 +785,14 @@ impl BountyRegistry {
             total += amount;
         }
         if total > bounty.amount {
-            return Err(Error::InvalidSplitShares);
+            return Err(BountyError::InvalidSplitShares);
         }
 
         // Store recipients locally for later use in approve_split
         for (i, (addr, _)) in slots.iter().enumerate() {
             env.storage()
                 .persistent()
-                .set(&DataKey::SplitRecipient(bounty_id, i as u32), &addr);
+                .set(&BountyDataKey::SplitRecipient(bounty_id, i as u32), &addr);
         }
 
         let escrow_addr = Self::get_escrow_addr(&env)?;
@@ -808,29 +814,29 @@ impl BountyRegistry {
         bounty_id: u64,
         slot_index: u32,
         points: u32,
-    ) -> Result<(), Error> {
+    ) -> Result<(), BountyError> {
         creator.require_auth();
 
-        let key = DataKey::Bounty(bounty_id);
+        let key = BountyDataKey::Bounty(bounty_id);
         let mut bounty: Bounty = env
             .storage()
             .persistent()
             .get(&key)
-            .ok_or(Error::BountyNotFound)?;
+            .ok_or(BountyError::BountyNotFound)?;
 
         if bounty.creator != creator {
-            return Err(Error::NotCreator);
+            return Err(BountyError::NotCreator);
         }
         if bounty.bounty_type != BountyType::Split {
-            return Err(Error::NotSplitType);
+            return Err(BountyError::NotSplitType);
         }
 
         // Get locally stored recipient
         let recipient: Address = env
             .storage()
             .persistent()
-            .get(&DataKey::SplitRecipient(bounty_id, slot_index))
-            .ok_or(Error::ApplicationNotFound)?;
+            .get(&BountyDataKey::SplitRecipient(bounty_id, slot_index))
+            .ok_or(BountyError::ApplicationNotFound)?;
 
         // Release the slot
         let escrow_addr = Self::get_escrow_addr(&env)?;
@@ -884,27 +890,27 @@ impl BountyRegistry {
     // FCFS AUTO-RELEASE
     // ========================================================================
 
-    pub fn auto_release_check(env: Env, bounty_id: u64) -> Result<(), Error> {
-        let key = DataKey::Bounty(bounty_id);
+    pub fn auto_release_check(env: Env, bounty_id: u64) -> Result<(), BountyError> {
+        let key = BountyDataKey::Bounty(bounty_id);
         let mut bounty: Bounty = env
             .storage()
             .persistent()
             .get(&key)
-            .ok_or(Error::BountyNotFound)?;
+            .ok_or(BountyError::BountyNotFound)?;
 
         if bounty.bounty_type != BountyType::FCFS {
-            return Err(Error::NotFCFSType);
+            return Err(BountyError::NotFCFSType);
         }
         if bounty.status != BountyStatus::InProgress {
-            return Err(Error::NotInProgress);
+            return Err(BountyError::NotInProgress);
         }
 
         // 7 days = 604_800 seconds after the deadline
         if env.ledger().timestamp() <= bounty.deadline + 604_800 {
-            return Err(Error::AutoReleaseNotReady);
+            return Err(BountyError::AutoReleaseNotReady);
         }
 
-        let winner = bounty.assignee.clone().ok_or(Error::NotAssignee)?;
+        let winner = bounty.assignee.clone().ok_or(BountyError::NotAssignee)?;
 
         // Release escrow slot 0
         let escrow_addr = Self::get_escrow_addr(&env)?;
@@ -955,21 +961,21 @@ impl BountyRegistry {
     // COMMON OPERATIONS
     // ========================================================================
 
-    pub fn cancel_bounty(env: Env, creator: Address, bounty_id: u64) -> Result<(), Error> {
+    pub fn cancel_bounty(env: Env, creator: Address, bounty_id: u64) -> Result<(), BountyError> {
         creator.require_auth();
 
-        let key = DataKey::Bounty(bounty_id);
+        let key = BountyDataKey::Bounty(bounty_id);
         let mut bounty: Bounty = env
             .storage()
             .persistent()
             .get(&key)
-            .ok_or(Error::BountyNotFound)?;
+            .ok_or(BountyError::BountyNotFound)?;
 
         if bounty.creator != creator {
-            return Err(Error::NotCreator);
+            return Err(BountyError::NotCreator);
         }
         if bounty.status != BountyStatus::Open {
-            return Err(Error::CannotCancel);
+            return Err(BountyError::CannotCancel);
         }
 
         // Restore credits to all applicants
@@ -978,13 +984,13 @@ impl BountyRegistry {
         let app_count: u32 = env
             .storage()
             .persistent()
-            .get(&DataKey::ApplicantCount(bounty_id))
+            .get(&BountyDataKey::ApplicantCount(bounty_id))
             .unwrap_or(0);
         for i in 0..app_count {
             if let Some(addr) = env
                 .storage()
                 .persistent()
-                .get::<_, Address>(&DataKey::Applicant(bounty_id, i))
+                .get::<_, Address>(&BountyDataKey::Applicant(bounty_id, i))
             {
                 let restore_args: Vec<Val> = Vec::from_array(
                     &env,
@@ -1012,28 +1018,28 @@ impl BountyRegistry {
         creator: Address,
         bounty_id: u64,
         applicant: Address,
-    ) -> Result<(), Error> {
+    ) -> Result<(), BountyError> {
         creator.require_auth();
 
         let bounty: Bounty = env
             .storage()
             .persistent()
-            .get(&DataKey::Bounty(bounty_id))
-            .ok_or(Error::BountyNotFound)?;
+            .get(&BountyDataKey::Bounty(bounty_id))
+            .ok_or(BountyError::BountyNotFound)?;
 
         if bounty.creator != creator {
-            return Err(Error::NotCreator);
+            return Err(BountyError::NotCreator);
         }
 
-        let app_key = DataKey::Application(bounty_id, applicant.clone());
+        let app_key = BountyDataKey::Application(bounty_id, applicant.clone());
         let mut app: Application = env
             .storage()
             .persistent()
             .get(&app_key)
-            .ok_or(Error::ApplicationNotFound)?;
+            .ok_or(BountyError::ApplicationNotFound)?;
 
         if app.status != ApplicationStatus::Pending {
-            return Err(Error::ApplicationNotPending);
+            return Err(BountyError::ApplicationNotPending);
         }
 
         app.status = ApplicationStatus::Rejected;
@@ -1066,21 +1072,21 @@ impl BountyRegistry {
         title: Option<String>,
         metadata_cid: Option<String>,
         deadline: Option<u64>,
-    ) -> Result<(), Error> {
+    ) -> Result<(), BountyError> {
         creator.require_auth();
 
-        let key = DataKey::Bounty(bounty_id);
+        let key = BountyDataKey::Bounty(bounty_id);
         let mut bounty: Bounty = env
             .storage()
             .persistent()
             .get(&key)
-            .ok_or(Error::BountyNotFound)?;
+            .ok_or(BountyError::BountyNotFound)?;
 
         if bounty.creator != creator {
-            return Err(Error::NotCreator);
+            return Err(BountyError::NotCreator);
         }
         if bounty.status != BountyStatus::Open {
-            return Err(Error::BountyNotOpen);
+            return Err(BountyError::BountyNotOpen);
         }
 
         if let Some(t) = title {
@@ -1091,7 +1097,7 @@ impl BountyRegistry {
         }
         if let Some(d) = deadline {
             if d <= env.ledger().timestamp() {
-                return Err(Error::DeadlinePassed);
+                return Err(BountyError::DeadlinePassed);
             }
             bounty.deadline = d;
         }
@@ -1104,12 +1110,12 @@ impl BountyRegistry {
     // ADMIN
     // ========================================================================
 
-    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), BountyError> {
         let admin: Address = env
             .storage()
             .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
+            .get(&BountyDataKey::Admin)
+            .ok_or(BountyError::NotInitialized)?;
         admin.require_auth();
         env.deployer().update_current_contract_wasm(new_wasm_hash);
         Self::extend_instance_ttl(&env);
@@ -1126,23 +1132,23 @@ impl BountyRegistry {
             .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND);
     }
 
-    fn extend_persistent_ttl(env: &Env, key: &DataKey) {
+    fn extend_persistent_ttl(env: &Env, key: &BountyDataKey) {
         env.storage()
             .persistent()
             .extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND);
     }
 
-    fn get_escrow_addr(env: &Env) -> Result<Address, Error> {
+    fn get_escrow_addr(env: &Env) -> Result<Address, BountyError> {
         env.storage()
             .instance()
-            .get(&DataKey::CoreEscrow)
-            .ok_or(Error::NotInitialized)
+            .get(&BountyDataKey::CoreEscrow)
+            .ok_or(BountyError::NotInitialized)
     }
 
-    fn get_rep_addr(env: &Env) -> Result<Address, Error> {
+    fn get_rep_addr(env: &Env) -> Result<Address, BountyError> {
         env.storage()
             .instance()
-            .get(&DataKey::ReputationRegistry)
-            .ok_or(Error::NotInitialized)
+            .get(&BountyDataKey::ReputationRegistry)
+            .ok_or(BountyError::NotInitialized)
     }
 }

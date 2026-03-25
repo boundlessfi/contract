@@ -3,7 +3,7 @@ use soroban_sdk::contracterror;
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
-pub enum Error {
+pub enum HackathonError {
     AlreadyInitialized = 1000,
     NotInitialized = 1001,
     HackathonNotFound = 1002,

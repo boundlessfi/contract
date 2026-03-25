@@ -3,7 +3,7 @@ use soroban_sdk::contracterror;
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
-pub enum Error {
+pub enum GrantError {
     AlreadyInitialized = 900,
     NotInitialized = 901,
     GrantNotFound = 902,

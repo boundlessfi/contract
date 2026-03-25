@@ -63,7 +63,7 @@ pub struct QFDonation {
 
 #[contracttype]
 #[derive(Clone)]
-pub enum DataKey {
+pub enum GovernanceDataKey {
     Admin,
     Version,
     AuthorizedModule(Address),

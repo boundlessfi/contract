@@ -5,12 +5,12 @@ use boundless_types::ttl::{
 };
 use boundless_types::ActivityCategory;
 
-use crate::error::Error;
+use crate::error::ReputationError;
 use crate::events::{
     CommunityBonusAdded, CreditsAwarded, CreditsRecharged, CreditsSpent, FraudRecorded,
     ModuleAuthorized, ScoreUpdated,
 };
-use crate::storage::{ContributorProfile, CreditData, DataKey};
+use crate::storage::{ContributorProfile, CreditData, ReputationDataKey};
 
 const RECHARGE_AMOUNT: u32 = 3;
 const RECHARGE_INTERVAL: u64 = 1_209_600; // 14 days in seconds
@@ -26,13 +26,17 @@ impl ReputationRegistry {
     // INITIALIZATION
     // ========================================================================
 
-    pub fn init(env: Env, admin: Address) -> Result<(), Error> {
-        if env.storage().instance().has(&DataKey::Admin) {
-            return Err(Error::AlreadyInitialized);
+    pub fn init(env: Env, admin: Address) -> Result<(), ReputationError> {
+        if env.storage().instance().has(&ReputationDataKey::Admin) {
+            return Err(ReputationError::AlreadyInitialized);
         }
         admin.require_auth();
-        env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage().instance().set(&DataKey::Version, &1u32);
+        env.storage()
+            .instance()
+            .set(&ReputationDataKey::Admin, &admin);
+        env.storage()
+            .instance()
+            .set(&ReputationDataKey::Version, &1u32);
         Self::extend_instance_ttl(&env);
         Ok(())
     }
@@ -41,10 +45,10 @@ impl ReputationRegistry {
     // PROFILE MANAGEMENT
     // ========================================================================
 
-    pub fn init_profile(env: Env, contributor: Address) -> Result<(), Error> {
+    pub fn init_profile(env: Env, contributor: Address) -> Result<(), ReputationError> {
         contributor.require_auth();
 
-        let key = DataKey::Profile(contributor.clone());
+        let key = ReputationDataKey::Profile(contributor.clone());
         if env.storage().persistent().has(&key) {
             return Ok(());
         }
@@ -70,7 +74,7 @@ impl ReputationRegistry {
         Self::extend_persistent_ttl(&env, &key);
 
         // Initialize credits
-        let credit_key = DataKey::CreditData(contributor);
+        let credit_key = ReputationDataKey::CreditData(contributor);
         let credits = CreditData::new(now);
         env.storage().persistent().set(&credit_key, &credits);
         Self::extend_persistent_ttl(&env, &credit_key);
@@ -79,37 +83,44 @@ impl ReputationRegistry {
         Ok(())
     }
 
-    pub fn set_profile_metadata(env: Env, contributor: Address, cid: String) -> Result<(), Error> {
+    pub fn set_profile_metadata(
+        env: Env,
+        contributor: Address,
+        cid: String,
+    ) -> Result<(), ReputationError> {
         contributor.require_auth();
-        let key = DataKey::Profile(contributor);
+        let key = ReputationDataKey::Profile(contributor);
         let mut profile: ContributorProfile = env
             .storage()
             .persistent()
             .get(&key)
-            .ok_or(Error::ProfileNotFound)?;
+            .ok_or(ReputationError::ProfileNotFound)?;
         profile.metadata_cid = cid;
         env.storage().persistent().set(&key, &profile);
         Ok(())
     }
 
-    pub fn get_profile(env: Env, contributor: Address) -> Result<ContributorProfile, Error> {
-        let key = DataKey::Profile(contributor);
+    pub fn get_profile(
+        env: Env,
+        contributor: Address,
+    ) -> Result<ContributorProfile, ReputationError> {
+        let key = ReputationDataKey::Profile(contributor);
         let profile = env
             .storage()
             .persistent()
             .get(&key)
-            .ok_or(Error::ProfileNotFound)?;
+            .ok_or(ReputationError::ProfileNotFound)?;
         Self::extend_persistent_ttl(&env, &key);
         Self::extend_instance_ttl(&env);
         Ok(profile)
     }
 
-    pub fn get_level(env: Env, contributor: Address) -> Result<u32, Error> {
+    pub fn get_level(env: Env, contributor: Address) -> Result<u32, ReputationError> {
         let profile: ContributorProfile = env
             .storage()
             .persistent()
-            .get(&DataKey::Profile(contributor))
-            .ok_or(Error::ProfileNotFound)?;
+            .get(&ReputationDataKey::Profile(contributor))
+            .ok_or(ReputationError::ProfileNotFound)?;
         Ok(profile.level)
     }
 
@@ -117,12 +128,12 @@ impl ReputationRegistry {
         env: Env,
         contributor: Address,
         min_level: u32,
-    ) -> Result<bool, Error> {
+    ) -> Result<bool, ReputationError> {
         let profile: ContributorProfile = env
             .storage()
             .persistent()
-            .get(&DataKey::Profile(contributor))
-            .ok_or(Error::ProfileNotFound)?;
+            .get(&ReputationDataKey::Profile(contributor))
+            .ok_or(ReputationError::ProfileNotFound)?;
         Ok(profile.level >= min_level)
     }
 
@@ -133,12 +144,12 @@ impl ReputationRegistry {
         min_level: u32,
         required_category: ActivityCategory,
         min_category_score: u32,
-    ) -> Result<bool, Error> {
+    ) -> Result<bool, ReputationError> {
         let profile: ContributorProfile = env
             .storage()
             .persistent()
-            .get(&DataKey::Profile(contributor))
-            .ok_or(Error::ProfileNotFound)?;
+            .get(&ReputationDataKey::Profile(contributor))
+            .ok_or(ReputationError::ProfileNotFound)?;
         if profile.level < min_level {
             return Ok(false);
         }
@@ -150,12 +161,12 @@ impl ReputationRegistry {
     // MODULE AUTHORIZATION
     // ========================================================================
 
-    pub fn add_authorized_module(env: Env, module: Address) -> Result<(), Error> {
+    pub fn add_authorized_module(env: Env, module: Address) -> Result<(), ReputationError> {
         let admin = Self::require_admin(&env)?;
         admin.require_auth();
         env.storage()
             .instance()
-            .set(&DataKey::AuthorizedModule(module.clone()), &true);
+            .set(&ReputationDataKey::AuthorizedModule(module.clone()), &true);
         ModuleAuthorized {
             module,
             authorized: true,
@@ -164,12 +175,12 @@ impl ReputationRegistry {
         Ok(())
     }
 
-    pub fn remove_authorized_module(env: Env, module: Address) -> Result<(), Error> {
+    pub fn remove_authorized_module(env: Env, module: Address) -> Result<(), ReputationError> {
         let admin = Self::require_admin(&env)?;
         admin.require_auth();
         env.storage()
             .instance()
-            .remove(&DataKey::AuthorizedModule(module.clone()));
+            .remove(&ReputationDataKey::AuthorizedModule(module.clone()));
         ModuleAuthorized {
             module,
             authorized: false,
@@ -188,11 +199,11 @@ impl ReputationRegistry {
         contributor: Address,
         category: ActivityCategory,
         points: u32,
-    ) -> Result<(), Error> {
+    ) -> Result<(), ReputationError> {
         module.require_auth();
         Self::require_authorized(&env, &module)?;
 
-        let key = DataKey::Profile(contributor.clone());
+        let key = ReputationDataKey::Profile(contributor.clone());
         let mut profile = Self::get_or_create_profile(&env, &contributor);
 
         profile.overall_score = profile.overall_score.saturating_add(points);
@@ -222,11 +233,11 @@ impl ReputationRegistry {
         contributor: Address,
         points: u32,
         is_win: bool,
-    ) -> Result<(), Error> {
+    ) -> Result<(), ReputationError> {
         module.require_auth();
         Self::require_authorized(&env, &module)?;
 
-        let key = DataKey::Profile(contributor.clone());
+        let key = ReputationDataKey::Profile(contributor.clone());
         let mut profile = Self::get_or_create_profile(&env, &contributor);
 
         profile.overall_score = profile.overall_score.saturating_add(points);
@@ -247,11 +258,15 @@ impl ReputationRegistry {
         Ok(())
     }
 
-    pub fn record_campaign_backed(env: Env, module: Address, backer: Address) -> Result<(), Error> {
+    pub fn record_campaign_backed(
+        env: Env,
+        module: Address,
+        backer: Address,
+    ) -> Result<(), ReputationError> {
         module.require_auth();
         Self::require_authorized(&env, &module)?;
 
-        let key = DataKey::Profile(backer.clone());
+        let key = ReputationDataKey::Profile(backer.clone());
         let mut profile = Self::get_or_create_profile(&env, &backer);
         profile.campaigns_backed = profile.campaigns_backed.saturating_add(1);
         profile.overall_score = profile.overall_score.saturating_add(5); // small reputation boost
@@ -265,11 +280,11 @@ impl ReputationRegistry {
         module: Address,
         recipient: Address,
         amount: i128,
-    ) -> Result<(), Error> {
+    ) -> Result<(), ReputationError> {
         module.require_auth();
         Self::require_authorized(&env, &module)?;
 
-        let key = DataKey::Profile(recipient.clone());
+        let key = ReputationDataKey::Profile(recipient.clone());
         let mut profile = Self::get_or_create_profile(&env, &recipient);
         profile.grants_received = profile.grants_received.saturating_add(1);
         profile.total_earned = profile.total_earned.saturating_add(amount);
@@ -279,16 +294,20 @@ impl ReputationRegistry {
         Ok(())
     }
 
-    pub fn record_penalty(env: Env, contributor: Address, points: u32) -> Result<(), Error> {
+    pub fn record_penalty(
+        env: Env,
+        contributor: Address,
+        points: u32,
+    ) -> Result<(), ReputationError> {
         let admin = Self::require_admin(&env)?;
         admin.require_auth();
 
-        let key = DataKey::Profile(contributor.clone());
+        let key = ReputationDataKey::Profile(contributor.clone());
         let mut profile: ContributorProfile = env
             .storage()
             .persistent()
             .get(&key)
-            .ok_or(Error::ProfileNotFound)?;
+            .ok_or(ReputationError::ProfileNotFound)?;
 
         profile.overall_score = profile.overall_score.saturating_sub(points);
         profile.level = Self::compute_level(profile.overall_score);
@@ -309,16 +328,16 @@ impl ReputationRegistry {
         env: Env,
         module: Address,
         contributor: Address,
-    ) -> Result<(), Error> {
+    ) -> Result<(), ReputationError> {
         module.require_auth();
         Self::require_authorized(&env, &module)?;
 
-        let key = DataKey::Profile(contributor.clone());
+        let key = ReputationDataKey::Profile(contributor.clone());
         let mut profile: ContributorProfile = env
             .storage()
             .persistent()
             .get(&key)
-            .ok_or(Error::ProfileNotFound)?;
+            .ok_or(ReputationError::ProfileNotFound)?;
 
         profile.overall_score = profile.overall_score.saturating_sub(10);
         profile.level = Self::compute_level(profile.overall_score);
@@ -339,16 +358,16 @@ impl ReputationRegistry {
         env: Env,
         module: Address,
         contributor: Address,
-    ) -> Result<(), Error> {
+    ) -> Result<(), ReputationError> {
         module.require_auth();
         Self::require_authorized(&env, &module)?;
 
-        let key = DataKey::Profile(contributor.clone());
+        let key = ReputationDataKey::Profile(contributor.clone());
         let mut profile: ContributorProfile = env
             .storage()
             .persistent()
             .get(&key)
-            .ok_or(Error::ProfileNotFound)?;
+            .ok_or(ReputationError::ProfileNotFound)?;
 
         profile.overall_score = profile.overall_score.saturating_sub(5);
         profile.level = Self::compute_level(profile.overall_score);
@@ -364,16 +383,16 @@ impl ReputationRegistry {
     }
 
     /// Record fraud. Admin-only. Deducts 100 reputation points.
-    pub fn record_fraud(env: Env, contributor: Address) -> Result<(), Error> {
+    pub fn record_fraud(env: Env, contributor: Address) -> Result<(), ReputationError> {
         let admin = Self::require_admin(&env)?;
         admin.require_auth();
 
-        let key = DataKey::Profile(contributor.clone());
+        let key = ReputationDataKey::Profile(contributor.clone());
         let mut profile: ContributorProfile = env
             .storage()
             .persistent()
             .get(&key)
-            .ok_or(Error::ProfileNotFound)?;
+            .ok_or(ReputationError::ProfileNotFound)?;
 
         profile.overall_score = profile.overall_score.saturating_sub(100);
         profile.level = Self::compute_level(profile.overall_score);
@@ -393,16 +412,16 @@ impl ReputationRegistry {
         contributor: Address,
         reason: String,
         points: u32,
-    ) -> Result<(), Error> {
+    ) -> Result<(), ReputationError> {
         let admin = Self::require_admin(&env)?;
         admin.require_auth();
 
-        let key = DataKey::Profile(contributor.clone());
+        let key = ReputationDataKey::Profile(contributor.clone());
         let mut profile: ContributorProfile = env
             .storage()
             .persistent()
             .get(&key)
-            .ok_or(Error::ProfileNotFound)?;
+            .ok_or(ReputationError::ProfileNotFound)?;
 
         profile.overall_score = profile.overall_score.saturating_add(points);
         profile.level = Self::compute_level(profile.overall_score);
@@ -421,16 +440,16 @@ impl ReputationRegistry {
     // SPARK CREDITS (merged from SparkCredits contract)
     // ========================================================================
 
-    pub fn spend_credit(env: Env, module: Address, user: Address) -> Result<bool, Error> {
+    pub fn spend_credit(env: Env, module: Address, user: Address) -> Result<bool, ReputationError> {
         module.require_auth();
         Self::require_authorized(&env, &module)?;
 
-        let key = DataKey::CreditData(user.clone());
+        let key = ReputationDataKey::CreditData(user.clone());
         let mut credits: CreditData = env
             .storage()
             .persistent()
             .get(&key)
-            .ok_or(Error::ProfileNotFound)?;
+            .ok_or(ReputationError::ProfileNotFound)?;
 
         if credits.credits == 0 {
             return Ok(false);
@@ -450,16 +469,16 @@ impl ReputationRegistry {
         Ok(true)
     }
 
-    pub fn restore_credit(env: Env, module: Address, user: Address) -> Result<(), Error> {
+    pub fn restore_credit(env: Env, module: Address, user: Address) -> Result<(), ReputationError> {
         module.require_auth();
         Self::require_authorized(&env, &module)?;
 
-        let key = DataKey::CreditData(user.clone());
+        let key = ReputationDataKey::CreditData(user.clone());
         let mut credits: CreditData = env
             .storage()
             .persistent()
             .get(&key)
-            .ok_or(Error::ProfileNotFound)?;
+            .ok_or(ReputationError::ProfileNotFound)?;
 
         if credits.credits < credits.max_credits {
             credits.credits += 1;
@@ -474,16 +493,16 @@ impl ReputationRegistry {
         module: Address,
         user: Address,
         amount: u32,
-    ) -> Result<(), Error> {
+    ) -> Result<(), ReputationError> {
         module.require_auth();
         Self::require_authorized(&env, &module)?;
 
-        let key = DataKey::CreditData(user.clone());
+        let key = ReputationDataKey::CreditData(user.clone());
         let mut credits: CreditData = env
             .storage()
             .persistent()
             .get(&key)
-            .ok_or(Error::ProfileNotFound)?;
+            .ok_or(ReputationError::ProfileNotFound)?;
 
         let new_credits = (credits.credits + amount).min(credits.max_credits);
         let added = new_credits - credits.credits;
@@ -501,21 +520,21 @@ impl ReputationRegistry {
     }
 
     /// Permissionless: anyone can trigger recharge for a user after 14 days.
-    pub fn try_recharge(env: Env, user: Address) -> Result<(), Error> {
-        let key = DataKey::CreditData(user.clone());
+    pub fn try_recharge(env: Env, user: Address) -> Result<(), ReputationError> {
+        let key = ReputationDataKey::CreditData(user.clone());
         let mut credits: CreditData = env
             .storage()
             .persistent()
             .get(&key)
-            .ok_or(Error::ProfileNotFound)?;
+            .ok_or(ReputationError::ProfileNotFound)?;
 
         let now = env.ledger().timestamp();
         if now < credits.last_recharge + RECHARGE_INTERVAL {
-            return Err(Error::RechargeNotReady);
+            return Err(ReputationError::RechargeNotReady);
         }
 
         // Update max for L3+ users
-        let profile_key = DataKey::Profile(user.clone());
+        let profile_key = ReputationDataKey::Profile(user.clone());
         if let Some(profile) = env
             .storage()
             .persistent()
@@ -543,30 +562,30 @@ impl ReputationRegistry {
         Ok(())
     }
 
-    pub fn get_credits(env: Env, user: Address) -> Result<u32, Error> {
+    pub fn get_credits(env: Env, user: Address) -> Result<u32, ReputationError> {
         let credits: CreditData = env
             .storage()
             .persistent()
-            .get(&DataKey::CreditData(user))
-            .ok_or(Error::ProfileNotFound)?;
+            .get(&ReputationDataKey::CreditData(user))
+            .ok_or(ReputationError::ProfileNotFound)?;
         Ok(credits.credits)
     }
 
     pub fn can_apply(env: Env, user: Address) -> bool {
         env.storage()
             .persistent()
-            .get(&DataKey::CreditData(user))
+            .get(&ReputationDataKey::CreditData(user))
             .map(|c: CreditData| c.credits > 0)
             .unwrap_or(false)
     }
 
     /// Returns the timestamp when the user can next recharge credits.
-    pub fn next_recharge_at(env: Env, user: Address) -> Result<u64, Error> {
+    pub fn next_recharge_at(env: Env, user: Address) -> Result<u64, ReputationError> {
         let credits: CreditData = env
             .storage()
             .persistent()
-            .get(&DataKey::CreditData(user))
-            .ok_or(Error::ProfileNotFound)?;
+            .get(&ReputationDataKey::CreditData(user))
+            .ok_or(ReputationError::ProfileNotFound)?;
         Ok(credits.last_recharge + RECHARGE_INTERVAL)
     }
 
@@ -574,7 +593,10 @@ impl ReputationRegistry {
     // ADMIN
     // ========================================================================
 
-    pub fn upgrade(env: Env, new_wasm_hash: soroban_sdk::BytesN<32>) -> Result<(), Error> {
+    pub fn upgrade(
+        env: Env,
+        new_wasm_hash: soroban_sdk::BytesN<32>,
+    ) -> Result<(), ReputationError> {
         let admin = Self::require_admin(&env)?;
         admin.require_auth();
         env.deployer().update_current_contract_wasm(new_wasm_hash);
@@ -592,27 +614,27 @@ impl ReputationRegistry {
             .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND);
     }
 
-    fn extend_persistent_ttl(env: &Env, key: &DataKey) {
+    fn extend_persistent_ttl(env: &Env, key: &ReputationDataKey) {
         env.storage()
             .persistent()
             .extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND);
     }
 
-    fn require_admin(env: &Env) -> Result<Address, Error> {
+    fn require_admin(env: &Env) -> Result<Address, ReputationError> {
         env.storage()
             .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)
+            .get(&ReputationDataKey::Admin)
+            .ok_or(ReputationError::NotInitialized)
     }
 
-    fn require_authorized(env: &Env, module: &Address) -> Result<(), Error> {
+    fn require_authorized(env: &Env, module: &Address) -> Result<(), ReputationError> {
         let authorized: bool = env
             .storage()
             .instance()
-            .get(&DataKey::AuthorizedModule(module.clone()))
+            .get(&ReputationDataKey::AuthorizedModule(module.clone()))
             .unwrap_or(false);
         if !authorized {
-            return Err(Error::ModuleNotAuthorized);
+            return Err(ReputationError::ModuleNotAuthorized);
         }
         Ok(())
     }
@@ -636,7 +658,7 @@ impl ReputationRegistry {
     }
 
     fn get_or_create_profile(env: &Env, contributor: &Address) -> ContributorProfile {
-        let key = DataKey::Profile(contributor.clone());
+        let key = ReputationDataKey::Profile(contributor.clone());
         env.storage()
             .persistent()
             .get(&key)

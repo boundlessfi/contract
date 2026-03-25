@@ -4,7 +4,7 @@
 /// - QF: multi-donor distribution verification
 /// - Hackathon: double-registration prevention
 use crate::setup::{setup_platform, Platform};
-use crowdfund_registry::storage::{CampaignStatus, MilestoneStatus};
+use crowdfund_registry::storage::{CampaignStatus, CrowdfundMilestoneStatus};
 use soroban_sdk::testutils::{Address as _, Ledger};
 use soroban_sdk::{Address, String, Vec};
 
@@ -61,21 +61,21 @@ fn test_request_milestone_revision() {
     p.crowdfund.submit_milestone(&cid, &0);
     assert_eq!(
         p.crowdfund.get_milestone(&cid, &0).status,
-        MilestoneStatus::Submitted
+        CrowdfundMilestoneStatus::Submitted
     );
 
     // Admin requests revision → back to Pending
     p.crowdfund.request_milestone_revision(&cid, &0);
     assert_eq!(
         p.crowdfund.get_milestone(&cid, &0).status,
-        MilestoneStatus::Pending
+        CrowdfundMilestoneStatus::Pending
     );
 
     // Owner can resubmit
     p.crowdfund.submit_milestone(&cid, &0);
     assert_eq!(
         p.crowdfund.get_milestone(&cid, &0).status,
-        MilestoneStatus::Submitted
+        CrowdfundMilestoneStatus::Submitted
     );
 
     // Complete the full lifecycle
@@ -113,13 +113,13 @@ fn test_revision_on_disputed_milestone() {
     p.crowdfund.dispute_milestone(&backer, &cid, &0);
     assert_eq!(
         p.crowdfund.get_milestone(&cid, &0).status,
-        MilestoneStatus::Disputed
+        CrowdfundMilestoneStatus::Disputed
     );
 
     p.crowdfund.request_milestone_revision(&cid, &0);
     assert_eq!(
         p.crowdfund.get_milestone(&cid, &0).status,
-        MilestoneStatus::Pending
+        CrowdfundMilestoneStatus::Pending
     );
 }
 

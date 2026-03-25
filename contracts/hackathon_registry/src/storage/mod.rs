@@ -54,7 +54,7 @@ pub struct SponsoredTrack {
 
 #[contracttype]
 #[derive(Clone)]
-pub enum DataKey {
+pub enum HackathonDataKey {
     Admin,
     CoreEscrow,
     ReputationRegistry,

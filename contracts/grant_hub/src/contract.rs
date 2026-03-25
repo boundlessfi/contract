@@ -7,12 +7,12 @@ use boundless_types::ttl::{
 };
 use boundless_types::ModuleType;
 
-use crate::error::Error;
+use crate::error::GrantError;
 use crate::events::{
     GrantCompleted, GrantCreated, MilestoneApproved, MilestoneSubmitted, QFDonationMade,
 };
 use crate::storage::{
-    DataKey, Grant, GrantMilestone, GrantStatus, GrantType, MilestoneStatus, QFRoundData,
+    Grant, GrantDataKey, GrantMilestone, GrantMilestoneStatus, GrantStatus, GrantType, QFRoundData,
     VoteContext, VoteOption,
 };
 
@@ -36,22 +36,24 @@ impl GrantHub {
         core_escrow: Address,
         reputation_registry: Address,
         governance_voting: Address,
-    ) -> Result<(), Error> {
-        if env.storage().instance().has(&DataKey::Admin) {
-            return Err(Error::AlreadyInitialized);
+    ) -> Result<(), GrantError> {
+        if env.storage().instance().has(&GrantDataKey::Admin) {
+            return Err(GrantError::AlreadyInitialized);
         }
         admin.require_auth();
-        env.storage().instance().set(&DataKey::Admin, &admin);
+        env.storage().instance().set(&GrantDataKey::Admin, &admin);
         env.storage()
             .instance()
-            .set(&DataKey::CoreEscrow, &core_escrow);
+            .set(&GrantDataKey::CoreEscrow, &core_escrow);
         env.storage()
             .instance()
-            .set(&DataKey::ReputationRegistry, &reputation_registry);
+            .set(&GrantDataKey::ReputationRegistry, &reputation_registry);
         env.storage()
             .instance()
-            .set(&DataKey::GovernanceVoting, &governance_voting);
-        env.storage().instance().set(&DataKey::GrantCount, &0u64);
+            .set(&GrantDataKey::GovernanceVoting, &governance_voting);
+        env.storage()
+            .instance()
+            .set(&GrantDataKey::GrantCount, &0u64);
         Self::extend_instance_ttl(&env);
         Ok(())
     }
@@ -60,13 +62,13 @@ impl GrantHub {
     // QUERIES
     // ========================================================================
 
-    pub fn get_grant(env: Env, grant_id: u64) -> Result<Grant, Error> {
-        let key = DataKey::Grant(grant_id);
+    pub fn get_grant(env: Env, grant_id: u64) -> Result<Grant, GrantError> {
+        let key = GrantDataKey::Grant(grant_id);
         let grant = env
             .storage()
             .persistent()
             .get(&key)
-            .ok_or(Error::GrantNotFound)?;
+            .ok_or(GrantError::GrantNotFound)?;
         Self::extend_persistent_ttl(&env, &key);
         Self::extend_instance_ttl(&env);
         Ok(grant)
@@ -76,25 +78,25 @@ impl GrantHub {
         env: Env,
         grant_id: u64,
         milestone_index: u32,
-    ) -> Result<GrantMilestone, Error> {
+    ) -> Result<GrantMilestone, GrantError> {
         env.storage()
             .persistent()
-            .get(&DataKey::GrantMilestone(grant_id, milestone_index))
-            .ok_or(Error::MilestoneNotFound)
+            .get(&GrantDataKey::GrantMilestone(grant_id, milestone_index))
+            .ok_or(GrantError::MilestoneNotFound)
     }
 
-    pub fn get_qf_round(env: Env, grant_id: u64) -> Result<QFRoundData, Error> {
+    pub fn get_qf_round(env: Env, grant_id: u64) -> Result<QFRoundData, GrantError> {
         env.storage()
             .persistent()
-            .get(&DataKey::QFRound(grant_id))
-            .ok_or(Error::GrantNotFound)
+            .get(&GrantDataKey::QFRound(grant_id))
+            .ok_or(GrantError::GrantNotFound)
     }
 
-    pub fn get_retro_session(env: Env, grant_id: u64) -> Result<BytesN<32>, Error> {
+    pub fn get_retro_session(env: Env, grant_id: u64) -> Result<BytesN<32>, GrantError> {
         env.storage()
             .persistent()
-            .get(&DataKey::RetroSession(grant_id))
-            .ok_or(Error::NoVoteSession)
+            .get(&GrantDataKey::RetroSession(grant_id))
+            .ok_or(GrantError::NoVoteSession)
     }
 
     // ========================================================================
@@ -108,11 +110,11 @@ impl GrantHub {
         amount: i128,
         asset: Address,
         milestone_descs: Vec<(String, u32)>,
-    ) -> Result<u64, Error> {
+    ) -> Result<u64, GrantError> {
         creator.require_auth();
 
         if amount <= 0 {
-            return Err(Error::InvalidAmount);
+            return Err(GrantError::InvalidAmount);
         }
 
         // Validate milestones sum to 10000
@@ -121,7 +123,7 @@ impl GrantHub {
             total_pct += pct;
         }
         if total_pct != 10000 {
-            return Err(Error::InvalidMilestonePercents);
+            return Err(GrantError::InvalidMilestonePercents);
         }
 
         let count = Self::next_grant_id(&env);
@@ -146,7 +148,10 @@ impl GrantHub {
         let mut slots: Vec<(Address, i128)> = Vec::new(&env);
         let milestone_count = milestone_descs.len();
         for (_, pct) in milestone_descs.iter() {
-            let slot_amount = amount.checked_mul(pct as i128).ok_or(Error::Overflow)? / 10000;
+            let slot_amount = amount
+                .checked_mul(pct as i128)
+                .ok_or(GrantError::Overflow)?
+                / 10000;
             slots.push_back((recipient.clone(), slot_amount));
         }
 
@@ -163,17 +168,17 @@ impl GrantHub {
                 id: i as u32,
                 description: desc,
                 pct,
-                status: MilestoneStatus::Pending,
+                status: GrantMilestoneStatus::Pending,
             };
             env.storage()
                 .persistent()
-                .set(&DataKey::GrantMilestone(count, i as u32), &milestone);
+                .set(&GrantDataKey::GrantMilestone(count, i as u32), &milestone);
         }
 
         // Store recipient for later use when all milestones complete
         env.storage()
             .persistent()
-            .set(&DataKey::GrantRecipient(count), &recipient);
+            .set(&GrantDataKey::GrantRecipient(count), &recipient);
 
         let grant = Grant {
             id: count,
@@ -188,7 +193,7 @@ impl GrantHub {
             created_at: env.ledger().timestamp(),
         };
 
-        let grant_key = DataKey::Grant(count);
+        let grant_key = GrantDataKey::Grant(count);
         env.storage().persistent().set(&grant_key, &grant);
         Self::extend_persistent_ttl(&env, &grant_key);
         Self::extend_instance_ttl(&env);
@@ -209,33 +214,33 @@ impl GrantHub {
         recipient: Address,
         grant_id: u64,
         milestone_index: u32,
-    ) -> Result<(), Error> {
+    ) -> Result<(), GrantError> {
         recipient.require_auth();
 
         let grant: Grant = env
             .storage()
             .persistent()
-            .get(&DataKey::Grant(grant_id))
-            .ok_or(Error::GrantNotFound)?;
+            .get(&GrantDataKey::Grant(grant_id))
+            .ok_or(GrantError::GrantNotFound)?;
 
         if grant.grant_type != GrantType::Milestone {
-            return Err(Error::NotMilestoneGrant);
+            return Err(GrantError::NotMilestoneGrant);
         }
 
-        let key = DataKey::GrantMilestone(grant_id, milestone_index);
+        let key = GrantDataKey::GrantMilestone(grant_id, milestone_index);
         let mut milestone: GrantMilestone = env
             .storage()
             .persistent()
             .get(&key)
-            .ok_or(Error::MilestoneNotFound)?;
+            .ok_or(GrantError::MilestoneNotFound)?;
 
-        if milestone.status != MilestoneStatus::Pending
-            && milestone.status != MilestoneStatus::Rejected
+        if milestone.status != GrantMilestoneStatus::Pending
+            && milestone.status != GrantMilestoneStatus::Rejected
         {
-            return Err(Error::InvalidMilestoneStatus);
+            return Err(GrantError::InvalidMilestoneStatus);
         }
 
-        milestone.status = MilestoneStatus::Submitted;
+        milestone.status = GrantMilestoneStatus::Submitted;
         env.storage().persistent().set(&key, &milestone);
 
         MilestoneSubmitted {
@@ -251,28 +256,28 @@ impl GrantHub {
         env: Env,
         grant_id: u64,
         milestone_index: u32,
-    ) -> Result<(), Error> {
+    ) -> Result<(), GrantError> {
         let admin = Self::require_admin(&env)?;
         admin.require_auth();
 
         let mut grant: Grant = env
             .storage()
             .persistent()
-            .get(&DataKey::Grant(grant_id))
-            .ok_or(Error::GrantNotFound)?;
+            .get(&GrantDataKey::Grant(grant_id))
+            .ok_or(GrantError::GrantNotFound)?;
 
-        let key = DataKey::GrantMilestone(grant_id, milestone_index);
+        let key = GrantDataKey::GrantMilestone(grant_id, milestone_index);
         let mut milestone: GrantMilestone = env
             .storage()
             .persistent()
             .get(&key)
-            .ok_or(Error::MilestoneNotFound)?;
+            .ok_or(GrantError::MilestoneNotFound)?;
 
-        if milestone.status != MilestoneStatus::Submitted {
-            return Err(Error::MilestoneNotSubmitted);
+        if milestone.status != GrantMilestoneStatus::Submitted {
+            return Err(GrantError::MilestoneNotSubmitted);
         }
 
-        milestone.status = MilestoneStatus::Released;
+        milestone.status = GrantMilestoneStatus::Released;
         env.storage().persistent().set(&key, &milestone);
 
         // Release escrow slot
@@ -301,9 +306,9 @@ impl GrantHub {
             let m: GrantMilestone = env
                 .storage()
                 .persistent()
-                .get(&DataKey::GrantMilestone(grant_id, i))
-                .ok_or(Error::MilestoneNotFound)?;
-            if m.status != MilestoneStatus::Released {
+                .get(&GrantDataKey::GrantMilestone(grant_id, i))
+                .ok_or(GrantError::MilestoneNotFound)?;
+            if m.status != GrantMilestoneStatus::Released {
                 all_done = false;
                 break;
             }
@@ -313,14 +318,14 @@ impl GrantHub {
             grant.status = GrantStatus::Completed;
             env.storage()
                 .persistent()
-                .set(&DataKey::Grant(grant_id), &grant);
+                .set(&GrantDataKey::Grant(grant_id), &grant);
 
             // Get recipient from stored key
             let recipient: Address = env
                 .storage()
                 .persistent()
-                .get(&DataKey::GrantRecipient(grant_id))
-                .ok_or(Error::GrantNotFound)?;
+                .get(&GrantDataKey::GrantRecipient(grant_id))
+                .ok_or(GrantError::GrantNotFound)?;
 
             // Record reputation
             let rep_addr = Self::get_rep_addr(&env);
@@ -339,7 +344,7 @@ impl GrantHub {
             grant.status = GrantStatus::Executing;
             env.storage()
                 .persistent()
-                .set(&DataKey::Grant(grant_id), &grant);
+                .set(&GrantDataKey::Grant(grant_id), &grant);
         }
 
         Ok(())
@@ -356,11 +361,11 @@ impl GrantHub {
         asset: Address,
         options: Vec<String>,
         voting_duration: u64,
-    ) -> Result<u64, Error> {
+    ) -> Result<u64, GrantError> {
         creator.require_auth();
 
         if amount <= 0 {
-            return Err(Error::InvalidAmount);
+            return Err(GrantError::InvalidAmount);
         }
 
         let count = Self::next_grant_id(&env);
@@ -406,7 +411,7 @@ impl GrantHub {
 
         env.storage()
             .persistent()
-            .set(&DataKey::RetroSession(count), &session_id);
+            .set(&GrantDataKey::RetroSession(count), &session_id);
 
         let grant = Grant {
             id: count,
@@ -421,7 +426,7 @@ impl GrantHub {
             created_at: env.ledger().timestamp(),
         };
 
-        let grant_key = DataKey::Grant(count);
+        let grant_key = GrantDataKey::Grant(count);
         env.storage().persistent().set(&grant_key, &grant);
         Self::extend_persistent_ttl(&env, &grant_key);
         Self::extend_instance_ttl(&env);
@@ -441,28 +446,28 @@ impl GrantHub {
         env: Env,
         grant_id: u64,
         recipients: Vec<Address>,
-    ) -> Result<(), Error> {
+    ) -> Result<(), GrantError> {
         let admin = Self::require_admin(&env)?;
         admin.require_auth();
 
         let mut grant: Grant = env
             .storage()
             .persistent()
-            .get(&DataKey::Grant(grant_id))
-            .ok_or(Error::GrantNotFound)?;
+            .get(&GrantDataKey::Grant(grant_id))
+            .ok_or(GrantError::GrantNotFound)?;
 
         if grant.grant_type != GrantType::Retrospective {
-            return Err(Error::NotRetrospectiveGrant);
+            return Err(GrantError::NotRetrospectiveGrant);
         }
         if grant.status != GrantStatus::Active {
-            return Err(Error::GrantNotActive);
+            return Err(GrantError::GrantNotActive);
         }
 
         let session_id: BytesN<32> = env
             .storage()
             .persistent()
-            .get(&DataKey::RetroSession(grant_id))
-            .ok_or(Error::NoVoteSession)?;
+            .get(&GrantDataKey::RetroSession(grant_id))
+            .ok_or(GrantError::NoVoteSession)?;
 
         // Get voting results
         let gov_addr = Self::get_gov_addr(&env);
@@ -484,11 +489,12 @@ impl GrantHub {
                     let share = grant
                         .amount
                         .checked_mul(opt.weighted_votes as i128)
-                        .ok_or(Error::Overflow)?
+                        .ok_or(GrantError::Overflow)?
                         / total_votes as i128;
                     if share > 0 {
-                        let recipient =
-                            recipients.get(i as u32).ok_or(Error::InvalidProjectIndex)?;
+                        let recipient = recipients
+                            .get(i as u32)
+                            .ok_or(GrantError::InvalidProjectIndex)?;
 
                         let release_args: Vec<Val> = Vec::from_array(
                             &env,
@@ -525,7 +531,7 @@ impl GrantHub {
         grant.status = GrantStatus::Completed;
         env.storage()
             .persistent()
-            .set(&DataKey::Grant(grant_id), &grant);
+            .set(&GrantDataKey::Grant(grant_id), &grant);
 
         GrantCompleted { grant_id }.publish(&env);
         Ok(())
@@ -542,11 +548,11 @@ impl GrantHub {
         asset: Address,
         project_names: Vec<String>,
         duration: u64,
-    ) -> Result<u64, Error> {
+    ) -> Result<u64, GrantError> {
         creator.require_auth();
 
         if matching_pool <= 0 {
-            return Err(Error::InvalidAmount);
+            return Err(GrantError::InvalidAmount);
         }
 
         let count = Self::next_grant_id(&env);
@@ -598,7 +604,7 @@ impl GrantHub {
 
         env.storage()
             .persistent()
-            .set(&DataKey::QFRound(count), &qf_data);
+            .set(&GrantDataKey::QFRound(count), &qf_data);
 
         let grant = Grant {
             id: count,
@@ -613,7 +619,7 @@ impl GrantHub {
             created_at: env.ledger().timestamp(),
         };
 
-        let grant_key = DataKey::Grant(count);
+        let grant_key = GrantDataKey::Grant(count);
         env.storage().persistent().set(&grant_key, &grant);
         Self::extend_persistent_ttl(&env, &grant_key);
         Self::extend_instance_ttl(&env);
@@ -634,25 +640,25 @@ impl GrantHub {
         grant_id: u64,
         amount: i128,
         project_index: u32,
-    ) -> Result<(), Error> {
+    ) -> Result<(), GrantError> {
         let grant: Grant = env
             .storage()
             .persistent()
-            .get(&DataKey::Grant(grant_id))
-            .ok_or(Error::GrantNotFound)?;
+            .get(&GrantDataKey::Grant(grant_id))
+            .ok_or(GrantError::GrantNotFound)?;
 
         if grant.grant_type != GrantType::QF {
-            return Err(Error::NotQFGrant);
+            return Err(GrantError::NotQFGrant);
         }
 
         let qf_data: QFRoundData = env
             .storage()
             .persistent()
-            .get(&DataKey::QFRound(grant_id))
-            .ok_or(Error::GrantNotFound)?;
+            .get(&GrantDataKey::QFRound(grant_id))
+            .ok_or(GrantError::GrantNotFound)?;
 
         if project_index >= qf_data.project_count {
-            return Err(Error::InvalidProjectIndex);
+            return Err(GrantError::InvalidProjectIndex);
         }
 
         // Record donation in GovernanceVoting
@@ -682,28 +688,28 @@ impl GrantHub {
         env: Env,
         grant_id: u64,
         project_addresses: Vec<Address>,
-    ) -> Result<(), Error> {
+    ) -> Result<(), GrantError> {
         let admin = Self::require_admin(&env)?;
         admin.require_auth();
 
         let mut grant: Grant = env
             .storage()
             .persistent()
-            .get(&DataKey::Grant(grant_id))
-            .ok_or(Error::GrantNotFound)?;
+            .get(&GrantDataKey::Grant(grant_id))
+            .ok_or(GrantError::GrantNotFound)?;
 
         if grant.grant_type != GrantType::QF {
-            return Err(Error::NotQFGrant);
+            return Err(GrantError::NotQFGrant);
         }
         if grant.status != GrantStatus::Active {
-            return Err(Error::GrantNotActive);
+            return Err(GrantError::GrantNotActive);
         }
 
         let qf_data: QFRoundData = env
             .storage()
             .persistent()
-            .get(&DataKey::QFRound(grant_id))
-            .ok_or(Error::GrantNotFound)?;
+            .get(&GrantDataKey::QFRound(grant_id))
+            .ok_or(GrantError::GrantNotFound)?;
 
         let gov_addr = Self::get_gov_addr(&env);
         let dist_args: Vec<Val> = Vec::from_array(
@@ -723,7 +729,7 @@ impl GrantHub {
             if amount > 0 {
                 let addr = project_addresses
                     .get(index)
-                    .ok_or(Error::InvalidProjectIndex)?;
+                    .ok_or(GrantError::InvalidProjectIndex)?;
 
                 let release_args: Vec<Val> = Vec::from_array(
                     &env,
@@ -754,7 +760,7 @@ impl GrantHub {
         grant.status = GrantStatus::Completed;
         env.storage()
             .persistent()
-            .set(&DataKey::Grant(grant_id), &grant);
+            .set(&GrantDataKey::Grant(grant_id), &grant);
 
         GrantCompleted { grant_id }.publish(&env);
         Ok(())
@@ -764,21 +770,21 @@ impl GrantHub {
     // CANCEL GRANT
     // ========================================================================
 
-    pub fn cancel_grant(env: Env, creator: Address, grant_id: u64) -> Result<(), Error> {
+    pub fn cancel_grant(env: Env, creator: Address, grant_id: u64) -> Result<(), GrantError> {
         creator.require_auth();
 
         let mut grant: Grant = env
             .storage()
             .persistent()
-            .get(&DataKey::Grant(grant_id))
-            .ok_or(Error::GrantNotFound)?;
+            .get(&GrantDataKey::Grant(grant_id))
+            .ok_or(GrantError::GrantNotFound)?;
 
         if grant.creator != creator {
-            return Err(Error::NotCreator);
+            return Err(GrantError::NotCreator);
         }
 
         if grant.status != GrantStatus::Pending && grant.status != GrantStatus::Active {
-            return Err(Error::CannotCancel);
+            return Err(GrantError::CannotCancel);
         }
 
         let escrow_addr = Self::get_escrow_addr(&env);
@@ -788,7 +794,7 @@ impl GrantHub {
         grant.status = GrantStatus::Cancelled;
         env.storage()
             .persistent()
-            .set(&DataKey::Grant(grant_id), &grant);
+            .set(&GrantDataKey::Grant(grant_id), &grant);
 
         Ok(())
     }
@@ -797,7 +803,7 @@ impl GrantHub {
     // UPGRADE
     // ========================================================================
 
-    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), GrantError> {
         let admin = Self::require_admin(&env)?;
         admin.require_auth();
         env.deployer().update_current_contract_wasm(new_wasm_hash);
@@ -815,7 +821,7 @@ impl GrantHub {
             .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND);
     }
 
-    fn extend_persistent_ttl(env: &Env, key: &DataKey) {
+    fn extend_persistent_ttl(env: &Env, key: &GrantDataKey) {
         env.storage()
             .persistent()
             .extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND);
@@ -825,38 +831,40 @@ impl GrantHub {
         let mut count: u64 = env
             .storage()
             .instance()
-            .get(&DataKey::GrantCount)
+            .get(&GrantDataKey::GrantCount)
             .unwrap_or(0);
         count += 1;
-        env.storage().instance().set(&DataKey::GrantCount, &count);
+        env.storage()
+            .instance()
+            .set(&GrantDataKey::GrantCount, &count);
         count
     }
 
-    fn require_admin(env: &Env) -> Result<Address, Error> {
+    fn require_admin(env: &Env) -> Result<Address, GrantError> {
         env.storage()
             .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)
+            .get(&GrantDataKey::Admin)
+            .ok_or(GrantError::NotInitialized)
     }
 
     fn get_escrow_addr(env: &Env) -> Address {
         env.storage()
             .instance()
-            .get(&DataKey::CoreEscrow)
+            .get(&GrantDataKey::CoreEscrow)
             .expect("not initialized")
     }
 
     fn get_rep_addr(env: &Env) -> Address {
         env.storage()
             .instance()
-            .get(&DataKey::ReputationRegistry)
+            .get(&GrantDataKey::ReputationRegistry)
             .expect("not initialized")
     }
 
     fn get_gov_addr(env: &Env) -> Address {
         env.storage()
             .instance()
-            .get(&DataKey::GovernanceVoting)
+            .get(&GrantDataKey::GovernanceVoting)
             .expect("not initialized")
     }
 }

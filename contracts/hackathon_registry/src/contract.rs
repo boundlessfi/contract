@@ -7,12 +7,12 @@ use boundless_types::ttl::{
 };
 use boundless_types::ModuleType;
 
-use crate::error::Error;
+use crate::error::HackathonError;
 use crate::events::{
     HackathonCancelled, HackathonCreated, PrizesDistributed, ProjectSubmitted, ScoreRecorded,
     SponsoredTrackAdded, TeamRegistered, TrackPrizesDistributed,
 };
-use crate::storage::{DataKey, Hackathon, HackathonStatus, SponsoredTrack, Submission};
+use crate::storage::{Hackathon, HackathonDataKey, HackathonStatus, SponsoredTrack, Submission};
 
 fn sym(env: &Env, name: &str) -> Symbol {
     Symbol::new(env, name)
@@ -32,21 +32,23 @@ impl HackathonRegistry {
         admin: Address,
         core_escrow: Address,
         reputation_registry: Address,
-    ) -> Result<(), Error> {
-        if env.storage().instance().has(&DataKey::Admin) {
-            return Err(Error::AlreadyInitialized);
+    ) -> Result<(), HackathonError> {
+        if env.storage().instance().has(&HackathonDataKey::Admin) {
+            return Err(HackathonError::AlreadyInitialized);
         }
         admin.require_auth();
-        env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage()
             .instance()
-            .set(&DataKey::CoreEscrow, &core_escrow);
+            .set(&HackathonDataKey::Admin, &admin);
         env.storage()
             .instance()
-            .set(&DataKey::ReputationRegistry, &reputation_registry);
+            .set(&HackathonDataKey::CoreEscrow, &core_escrow);
         env.storage()
             .instance()
-            .set(&DataKey::HackathonCount, &0u64);
+            .set(&HackathonDataKey::ReputationRegistry, &reputation_registry);
+        env.storage()
+            .instance()
+            .set(&HackathonDataKey::HackathonCount, &0u64);
         Self::extend_instance_ttl(&env);
         Ok(())
     }
@@ -67,11 +69,11 @@ impl HackathonRegistry {
         judging_deadline: u64,
         max_participants: u32,
         prize_tiers: Vec<u32>,
-    ) -> Result<u64, Error> {
+    ) -> Result<u64, HackathonError> {
         creator.require_auth();
 
         if registration_deadline >= submission_deadline || submission_deadline >= judging_deadline {
-            return Err(Error::InvalidDeadlines);
+            return Err(HackathonError::InvalidDeadlines);
         }
 
         let mut total_bps: u32 = 0;
@@ -79,18 +81,18 @@ impl HackathonRegistry {
             total_bps += prize_tiers.get(i).unwrap();
         }
         if total_bps != 10000 {
-            return Err(Error::InvalidPrizeTiers);
+            return Err(HackathonError::InvalidPrizeTiers);
         }
 
         let mut count: u64 = env
             .storage()
             .instance()
-            .get(&DataKey::HackathonCount)
+            .get(&HackathonDataKey::HackathonCount)
             .unwrap_or(0);
         count += 1;
         env.storage()
             .instance()
-            .set(&DataKey::HackathonCount, &count);
+            .set(&HackathonDataKey::HackathonCount, &count);
 
         // Create escrow pool
         let escrow_addr = Self::get_escrow_addr(&env)?;
@@ -118,7 +120,7 @@ impl HackathonRegistry {
             let pct = prize_tiers.get(i).unwrap();
             env.storage()
                 .persistent()
-                .set(&DataKey::PrizeTier(count, i), &pct);
+                .set(&HackathonDataKey::PrizeTier(count, i), &pct);
         }
 
         let hackathon = Hackathon {
@@ -138,7 +140,7 @@ impl HackathonRegistry {
             max_participants,
         };
 
-        let hack_key = DataKey::Hackathon(count);
+        let hack_key = HackathonDataKey::Hackathon(count);
         env.storage().persistent().set(&hack_key, &hackathon);
         Self::extend_persistent_ttl(&env, &hack_key);
         Self::extend_instance_ttl(&env);
@@ -152,71 +154,71 @@ impl HackathonRegistry {
     // JUDGES
     // ========================================================================
 
-    pub fn add_judge(env: Env, hackathon_id: u64, judge: Address) -> Result<(), Error> {
+    pub fn add_judge(env: Env, hackathon_id: u64, judge: Address) -> Result<(), HackathonError> {
         let mut hackathon = Self::load_hackathon(&env, hackathon_id)?;
         hackathon.creator.require_auth();
 
         if env
             .storage()
             .persistent()
-            .has(&DataKey::Judge(hackathon_id, judge.clone()))
+            .has(&HackathonDataKey::Judge(hackathon_id, judge.clone()))
         {
-            return Err(Error::AlreadyJudge);
+            return Err(HackathonError::AlreadyJudge);
         }
 
         let idx = hackathon.judge_count;
         env.storage()
             .persistent()
-            .set(&DataKey::Judge(hackathon_id, judge.clone()), &true);
+            .set(&HackathonDataKey::Judge(hackathon_id, judge.clone()), &true);
         env.storage()
             .persistent()
-            .set(&DataKey::JudgeIndex(hackathon_id, idx), &judge);
+            .set(&HackathonDataKey::JudgeIndex(hackathon_id, idx), &judge);
 
         hackathon.judge_count += 1;
         env.storage()
             .persistent()
-            .set(&DataKey::Hackathon(hackathon_id), &hackathon);
+            .set(&HackathonDataKey::Hackathon(hackathon_id), &hackathon);
 
         Ok(())
     }
 
-    pub fn remove_judge(env: Env, hackathon_id: u64, judge: Address) -> Result<(), Error> {
+    pub fn remove_judge(env: Env, hackathon_id: u64, judge: Address) -> Result<(), HackathonError> {
         let mut hackathon = Self::load_hackathon(&env, hackathon_id)?;
         hackathon.creator.require_auth();
 
         if !env
             .storage()
             .persistent()
-            .has(&DataKey::Judge(hackathon_id, judge.clone()))
+            .has(&HackathonDataKey::Judge(hackathon_id, judge.clone()))
         {
-            return Err(Error::JudgeNotFound);
+            return Err(HackathonError::JudgeNotFound);
         }
 
         env.storage()
             .persistent()
-            .remove(&DataKey::Judge(hackathon_id, judge.clone()));
+            .remove(&HackathonDataKey::Judge(hackathon_id, judge.clone()));
 
         let last_idx = hackathon.judge_count - 1;
         for i in 0..hackathon.judge_count {
             let indexed: Address = env
                 .storage()
                 .persistent()
-                .get(&DataKey::JudgeIndex(hackathon_id, i))
+                .get(&HackathonDataKey::JudgeIndex(hackathon_id, i))
                 .unwrap();
             if indexed == judge {
                 if i != last_idx {
                     let last: Address = env
                         .storage()
                         .persistent()
-                        .get(&DataKey::JudgeIndex(hackathon_id, last_idx))
+                        .get(&HackathonDataKey::JudgeIndex(hackathon_id, last_idx))
                         .unwrap();
                     env.storage()
                         .persistent()
-                        .set(&DataKey::JudgeIndex(hackathon_id, i), &last);
+                        .set(&HackathonDataKey::JudgeIndex(hackathon_id, i), &last);
                 }
                 env.storage()
                     .persistent()
-                    .remove(&DataKey::JudgeIndex(hackathon_id, last_idx));
+                    .remove(&HackathonDataKey::JudgeIndex(hackathon_id, last_idx));
                 break;
             }
         }
@@ -224,7 +226,7 @@ impl HackathonRegistry {
         hackathon.judge_count -= 1;
         env.storage()
             .persistent()
-            .set(&DataKey::Hackathon(hackathon_id), &hackathon);
+            .set(&HackathonDataKey::Hackathon(hackathon_id), &hackathon);
 
         Ok(())
     }
@@ -233,25 +235,32 @@ impl HackathonRegistry {
     // REGISTRATION & SUBMISSION
     // ========================================================================
 
-    pub fn register_team(env: Env, hackathon_id: u64, team_lead: Address) -> Result<(), Error> {
+    pub fn register_team(
+        env: Env,
+        hackathon_id: u64,
+        team_lead: Address,
+    ) -> Result<(), HackathonError> {
         team_lead.require_auth();
 
         let mut hackathon = Self::load_hackathon(&env, hackathon_id)?;
 
         if env.ledger().timestamp() > hackathon.registration_deadline {
-            return Err(Error::RegistrationClosed);
+            return Err(HackathonError::RegistrationClosed);
         }
 
         if env
             .storage()
             .persistent()
-            .has(&DataKey::Submission(hackathon_id, team_lead.clone()))
+            .has(&HackathonDataKey::Submission(
+                hackathon_id,
+                team_lead.clone(),
+            ))
         {
-            return Err(Error::AlreadyRegistered);
+            return Err(HackathonError::AlreadyRegistered);
         }
 
         if hackathon.submission_count >= hackathon.max_participants {
-            return Err(Error::MaxParticipantsReached);
+            return Err(HackathonError::MaxParticipantsReached);
         }
 
         let submission = Submission {
@@ -265,16 +274,16 @@ impl HackathonRegistry {
 
         let idx = hackathon.submission_count;
         env.storage().persistent().set(
-            &DataKey::Submission(hackathon_id, team_lead.clone()),
+            &HackathonDataKey::Submission(hackathon_id, team_lead.clone()),
             &submission,
         );
         env.storage().persistent().set(
-            &DataKey::SubmissionIndex(hackathon_id, idx),
+            &HackathonDataKey::SubmissionIndex(hackathon_id, idx),
             &team_lead.clone(),
         );
 
         hackathon.submission_count += 1;
-        let hack_key = DataKey::Hackathon(hackathon_id);
+        let hack_key = HackathonDataKey::Hackathon(hackathon_id);
         env.storage().persistent().set(&hack_key, &hackathon);
         Self::extend_persistent_ttl(&env, &hack_key);
         Self::extend_instance_ttl(&env);
@@ -293,24 +302,24 @@ impl HackathonRegistry {
         hackathon_id: u64,
         team_lead: Address,
         metadata_cid: String,
-    ) -> Result<(), Error> {
+    ) -> Result<(), HackathonError> {
         team_lead.require_auth();
 
         let hackathon = Self::load_hackathon(&env, hackathon_id)?;
 
         if env.ledger().timestamp() > hackathon.submission_deadline {
-            return Err(Error::SubmissionClosed);
+            return Err(HackathonError::SubmissionClosed);
         }
 
-        let sub_key = DataKey::Submission(hackathon_id, team_lead.clone());
+        let sub_key = HackathonDataKey::Submission(hackathon_id, team_lead.clone());
         let mut submission: Submission = env
             .storage()
             .persistent()
             .get(&sub_key)
-            .ok_or(Error::NotRegistered)?;
+            .ok_or(HackathonError::NotRegistered)?;
 
         if submission.submitted_at > 0 {
-            return Err(Error::AlreadySubmitted);
+            return Err(HackathonError::AlreadySubmitted);
         }
 
         submission.metadata_cid = metadata_cid;
@@ -331,23 +340,23 @@ impl HackathonRegistry {
     // JUDGING
     // ========================================================================
 
-    pub fn open_judging(env: Env, hackathon_id: u64) -> Result<(), Error> {
+    pub fn open_judging(env: Env, hackathon_id: u64) -> Result<(), HackathonError> {
         let mut hackathon = Self::load_hackathon(&env, hackathon_id)?;
 
         if hackathon.status != HackathonStatus::Registration
             && hackathon.status != HackathonStatus::Submission
         {
-            return Err(Error::InvalidStatus);
+            return Err(HackathonError::InvalidStatus);
         }
 
         if env.ledger().timestamp() <= hackathon.submission_deadline {
-            return Err(Error::SubmissionPeriodNotEnded);
+            return Err(HackathonError::SubmissionPeriodNotEnded);
         }
 
         hackathon.status = HackathonStatus::Judging;
         env.storage()
             .persistent()
-            .set(&DataKey::Hackathon(hackathon_id), &hackathon);
+            .set(&HackathonDataKey::Hackathon(hackathon_id), &hackathon);
 
         Ok(())
     }
@@ -358,39 +367,40 @@ impl HackathonRegistry {
         judge: Address,
         team_lead: Address,
         score: u32,
-    ) -> Result<(), Error> {
+    ) -> Result<(), HackathonError> {
         judge.require_auth();
 
         let hackathon = Self::load_hackathon(&env, hackathon_id)?;
 
         if hackathon.status != HackathonStatus::Judging {
-            return Err(Error::JudgingNotActive);
+            return Err(HackathonError::JudgingNotActive);
         }
         if env.ledger().timestamp() > hackathon.judging_deadline {
-            return Err(Error::JudgingNotActive);
+            return Err(HackathonError::JudgingNotActive);
         }
         if score > 100 {
-            return Err(Error::InvalidScore);
+            return Err(HackathonError::InvalidScore);
         }
 
         if !env
             .storage()
             .persistent()
-            .has(&DataKey::Judge(hackathon_id, judge.clone()))
+            .has(&HackathonDataKey::Judge(hackathon_id, judge.clone()))
         {
-            return Err(Error::NotAJudge);
+            return Err(HackathonError::NotAJudge);
         }
 
-        let sub_key = DataKey::Submission(hackathon_id, team_lead.clone());
+        let sub_key = HackathonDataKey::Submission(hackathon_id, team_lead.clone());
         let mut submission: Submission = env
             .storage()
             .persistent()
             .get(&sub_key)
-            .ok_or(Error::SubmissionNotFound)?;
+            .ok_or(HackathonError::SubmissionNotFound)?;
 
-        let score_key = DataKey::JudgeScore(hackathon_id, team_lead.clone(), judge.clone());
+        let score_key =
+            HackathonDataKey::JudgeScore(hackathon_id, team_lead.clone(), judge.clone());
         if env.storage().persistent().has(&score_key) {
-            return Err(Error::AlreadyScored);
+            return Err(HackathonError::AlreadyScored);
         }
 
         env.storage().persistent().set(&score_key, &score);
@@ -414,17 +424,17 @@ impl HackathonRegistry {
     // FINALIZATION
     // ========================================================================
 
-    pub fn finalize_hackathon(env: Env, hackathon_id: u64) -> Result<(), Error> {
+    pub fn finalize_hackathon(env: Env, hackathon_id: u64) -> Result<(), HackathonError> {
         let mut hackathon = Self::load_hackathon(&env, hackathon_id)?;
 
         if env.ledger().timestamp() <= hackathon.judging_deadline {
-            return Err(Error::JudgingNotOver);
+            return Err(HackathonError::JudgingNotOver);
         }
 
         if hackathon.status == HackathonStatus::Completed
             || hackathon.status == HackathonStatus::Cancelled
         {
-            return Err(Error::InvalidStatus);
+            return Err(HackathonError::InvalidStatus);
         }
 
         let escrow_addr = Self::get_escrow_addr(&env)?;
@@ -432,7 +442,7 @@ impl HackathonRegistry {
 
         let sub_count = hackathon.submission_count;
         if sub_count == 0 {
-            return Err(Error::NoSubmissions);
+            return Err(HackathonError::NoSubmissions);
         }
 
         // Gather submissions sorted by avg score (descending)
@@ -443,12 +453,12 @@ impl HackathonRegistry {
             let lead: Address = env
                 .storage()
                 .persistent()
-                .get(&DataKey::SubmissionIndex(hackathon_id, i))
+                .get(&HackathonDataKey::SubmissionIndex(hackathon_id, i))
                 .unwrap();
             let sub: Submission = env
                 .storage()
                 .persistent()
-                .get(&DataKey::Submission(hackathon_id, lead.clone()))
+                .get(&HackathonDataKey::Submission(hackathon_id, lead.clone()))
                 .unwrap();
 
             if sub.disqualified || sub.submitted_at == 0 {
@@ -482,7 +492,7 @@ impl HackathonRegistry {
             if !env
                 .storage()
                 .persistent()
-                .has(&DataKey::PrizeTier(hackathon_id, tier_count))
+                .has(&HackathonDataKey::PrizeTier(hackathon_id, tier_count))
             {
                 break;
             }
@@ -502,13 +512,13 @@ impl HackathonRegistry {
             let pct: u32 = env
                 .storage()
                 .persistent()
-                .get(&DataKey::PrizeTier(hackathon_id, rank))
+                .get(&HackathonDataKey::PrizeTier(hackathon_id, rank))
                 .unwrap();
 
             let amount = hackathon
                 .prize_pool
                 .checked_mul(pct as i128)
-                .ok_or(Error::Overflow)?
+                .ok_or(HackathonError::Overflow)?
                 / 10000;
             if amount > 0 {
                 let release_args: Vec<Val> = Vec::from_array(
@@ -550,7 +560,7 @@ impl HackathonRegistry {
         hackathon.status = HackathonStatus::Completed;
         env.storage()
             .persistent()
-            .set(&DataKey::Hackathon(hackathon_id), &hackathon);
+            .set(&HackathonDataKey::Hackathon(hackathon_id), &hackathon);
 
         PrizesDistributed { hackathon_id }.publish(&env);
 
@@ -565,23 +575,23 @@ impl HackathonRegistry {
         env: Env,
         hackathon_id: u64,
         team_lead: Address,
-    ) -> Result<(), Error> {
+    ) -> Result<(), HackathonError> {
         let admin: Address = env
             .storage()
             .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
+            .get(&HackathonDataKey::Admin)
+            .ok_or(HackathonError::NotInitialized)?;
         admin.require_auth();
 
-        let sub_key = DataKey::Submission(hackathon_id, team_lead);
+        let sub_key = HackathonDataKey::Submission(hackathon_id, team_lead);
         let mut submission: Submission = env
             .storage()
             .persistent()
             .get(&sub_key)
-            .ok_or(Error::SubmissionNotFound)?;
+            .ok_or(HackathonError::SubmissionNotFound)?;
 
         if submission.disqualified {
-            return Err(Error::AlreadyDisqualified);
+            return Err(HackathonError::AlreadyDisqualified);
         }
 
         submission.disqualified = true;
@@ -590,12 +600,12 @@ impl HackathonRegistry {
         Ok(())
     }
 
-    pub fn cancel_hackathon(env: Env, hackathon_id: u64) -> Result<(), Error> {
+    pub fn cancel_hackathon(env: Env, hackathon_id: u64) -> Result<(), HackathonError> {
         let admin: Address = env
             .storage()
             .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
+            .get(&HackathonDataKey::Admin)
+            .ok_or(HackathonError::NotInitialized)?;
         admin.require_auth();
 
         let mut hackathon = Self::load_hackathon(&env, hackathon_id)?;
@@ -603,7 +613,7 @@ impl HackathonRegistry {
         if hackathon.status == HackathonStatus::Completed
             || hackathon.status == HackathonStatus::Cancelled
         {
-            return Err(Error::HackathonNotCancellable);
+            return Err(HackathonError::HackathonNotCancellable);
         }
 
         let escrow_addr = Self::get_escrow_addr(&env)?;
@@ -614,19 +624,19 @@ impl HackathonRegistry {
         hackathon.status = HackathonStatus::Cancelled;
         env.storage()
             .persistent()
-            .set(&DataKey::Hackathon(hackathon_id), &hackathon);
+            .set(&HackathonDataKey::Hackathon(hackathon_id), &hackathon);
 
         HackathonCancelled { hackathon_id }.publish(&env);
 
         Ok(())
     }
 
-    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), HackathonError> {
         let admin: Address = env
             .storage()
             .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
+            .get(&HackathonDataKey::Admin)
+            .ok_or(HackathonError::NotInitialized)?;
         admin.require_auth();
         env.deployer().update_current_contract_wasm(new_wasm_hash);
         Self::extend_instance_ttl(&env);
@@ -644,7 +654,7 @@ impl HackathonRegistry {
         track_name: String,
         prize_amount: i128,
         asset: Address,
-    ) -> Result<u32, Error> {
+    ) -> Result<u32, HackathonError> {
         sponsor.require_auth();
 
         let hackathon = Self::load_hackathon(&env, hackathon_id)?;
@@ -652,10 +662,10 @@ impl HackathonRegistry {
         if hackathon.status != HackathonStatus::Registration
             && hackathon.status != HackathonStatus::Submission
         {
-            return Err(Error::InvalidTrackStatus);
+            return Err(HackathonError::InvalidTrackStatus);
         }
 
-        let track_count_key = DataKey::HackathonTrackCount(hackathon_id);
+        let track_count_key = HackathonDataKey::HackathonTrackCount(hackathon_id);
         let track_id: u32 = env
             .storage()
             .persistent()
@@ -692,7 +702,7 @@ impl HackathonRegistry {
             pool_id,
         };
 
-        let track_key = DataKey::HackathonTrack(hackathon_id, track_id);
+        let track_key = HackathonDataKey::HackathonTrack(hackathon_id, track_id);
         env.storage().persistent().set(&track_key, &track);
         Self::extend_persistent_ttl(&env, &track_key);
 
@@ -717,12 +727,12 @@ impl HackathonRegistry {
         hackathon_id: u64,
         track_id: u32,
         winners: Vec<(Address, i128)>,
-    ) -> Result<(), Error> {
+    ) -> Result<(), HackathonError> {
         let admin: Address = env
             .storage()
             .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
+            .get(&HackathonDataKey::Admin)
+            .ok_or(HackathonError::NotInitialized)?;
         admin.require_auth();
 
         let hackathon = Self::load_hackathon(&env, hackathon_id)?;
@@ -730,15 +740,15 @@ impl HackathonRegistry {
         if hackathon.status != HackathonStatus::Judging
             && hackathon.status != HackathonStatus::Completed
         {
-            return Err(Error::InvalidStatus);
+            return Err(HackathonError::InvalidStatus);
         }
 
-        let track_key = DataKey::HackathonTrack(hackathon_id, track_id);
+        let track_key = HackathonDataKey::HackathonTrack(hackathon_id, track_id);
         let track: SponsoredTrack = env
             .storage()
             .persistent()
             .get(&track_key)
-            .ok_or(Error::TrackNotFound)?;
+            .ok_or(HackathonError::TrackNotFound)?;
 
         let escrow_addr = Self::get_escrow_addr(&env)?;
         let rep_addr = Self::get_rep_addr(&env)?;
@@ -796,13 +806,13 @@ impl HackathonRegistry {
     // QUERIES
     // ========================================================================
 
-    pub fn get_hackathon(env: Env, id: u64) -> Result<Hackathon, Error> {
-        let key = DataKey::Hackathon(id);
+    pub fn get_hackathon(env: Env, id: u64) -> Result<Hackathon, HackathonError> {
+        let key = HackathonDataKey::Hackathon(id);
         let hackathon = env
             .storage()
             .persistent()
             .get(&key)
-            .ok_or(Error::HackathonNotFound)?;
+            .ok_or(HackathonError::HackathonNotFound)?;
         Self::extend_persistent_ttl(&env, &key);
         Self::extend_instance_ttl(&env);
         Ok(hackathon)
@@ -812,11 +822,11 @@ impl HackathonRegistry {
         env: Env,
         hackathon_id: u64,
         team_lead: Address,
-    ) -> Result<Submission, Error> {
+    ) -> Result<Submission, HackathonError> {
         env.storage()
             .persistent()
-            .get(&DataKey::Submission(hackathon_id, team_lead))
-            .ok_or(Error::SubmissionNotFound)
+            .get(&HackathonDataKey::Submission(hackathon_id, team_lead))
+            .ok_or(HackathonError::SubmissionNotFound)
     }
 
     // ========================================================================
@@ -829,30 +839,30 @@ impl HackathonRegistry {
             .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND);
     }
 
-    fn extend_persistent_ttl(env: &Env, key: &DataKey) {
+    fn extend_persistent_ttl(env: &Env, key: &HackathonDataKey) {
         env.storage()
             .persistent()
             .extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND);
     }
 
-    fn load_hackathon(env: &Env, id: u64) -> Result<Hackathon, Error> {
+    fn load_hackathon(env: &Env, id: u64) -> Result<Hackathon, HackathonError> {
         env.storage()
             .persistent()
-            .get(&DataKey::Hackathon(id))
-            .ok_or(Error::HackathonNotFound)
+            .get(&HackathonDataKey::Hackathon(id))
+            .ok_or(HackathonError::HackathonNotFound)
     }
 
-    fn get_escrow_addr(env: &Env) -> Result<Address, Error> {
+    fn get_escrow_addr(env: &Env) -> Result<Address, HackathonError> {
         env.storage()
             .instance()
-            .get(&DataKey::CoreEscrow)
-            .ok_or(Error::NotInitialized)
+            .get(&HackathonDataKey::CoreEscrow)
+            .ok_or(HackathonError::NotInitialized)
     }
 
-    fn get_rep_addr(env: &Env) -> Result<Address, Error> {
+    fn get_rep_addr(env: &Env) -> Result<Address, HackathonError> {
         env.storage()
             .instance()
-            .get(&DataKey::ReputationRegistry)
-            .ok_or(Error::NotInitialized)
+            .get(&HackathonDataKey::ReputationRegistry)
+            .ok_or(HackathonError::NotInitialized)
     }
 }

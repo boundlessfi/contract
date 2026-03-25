@@ -202,7 +202,7 @@ fn test_milestone_rejection_and_resubmit() {
     let ms = p.crowdfund.get_milestone(&cid, &0);
     assert_eq!(
         ms.status,
-        crowdfund_registry::storage::MilestoneStatus::Rejected
+        crowdfund_registry::storage::CrowdfundMilestoneStatus::Rejected
     );
 
     // Resubmit
@@ -210,7 +210,7 @@ fn test_milestone_rejection_and_resubmit() {
     let ms = p.crowdfund.get_milestone(&cid, &0);
     assert_eq!(
         ms.status,
-        crowdfund_registry::storage::MilestoneStatus::Submitted
+        crowdfund_registry::storage::CrowdfundMilestoneStatus::Submitted
     );
 
     // Approve and complete

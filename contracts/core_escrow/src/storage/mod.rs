@@ -7,7 +7,7 @@ use boundless_types::SubType;
 
 #[contracttype]
 #[derive(Clone)]
-pub enum DataKey {
+pub enum EscrowDataKey {
     Admin,
     Treasury,
     FeeConfig,

@@ -344,12 +344,18 @@ fn test_reject_milestone() {
     // Reject it
     t.client.reject_milestone(&cid, &0);
     let ms = t.client.get_milestone(&cid, &0);
-    assert_eq!(ms.status, crate::storage::MilestoneStatus::Rejected);
+    assert_eq!(
+        ms.status,
+        crate::storage::CrowdfundMilestoneStatus::Rejected
+    );
 
     // Can resubmit after rejection
     t.client.submit_milestone(&cid, &0);
     let ms = t.client.get_milestone(&cid, &0);
-    assert_eq!(ms.status, crate::storage::MilestoneStatus::Submitted);
+    assert_eq!(
+        ms.status,
+        crate::storage::CrowdfundMilestoneStatus::Submitted
+    );
 }
 
 #[test]

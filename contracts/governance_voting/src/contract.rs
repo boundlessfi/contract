@@ -5,9 +5,11 @@ use boundless_types::ttl::{
     INSTANCE_TTL_EXTEND, INSTANCE_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND, PERSISTENT_TTL_THRESHOLD,
 };
 
-use crate::error::Error;
+use crate::error::GovernanceError;
 use crate::events::{QFDonationRecorded, SessionConcluded, SessionCreated, VoteCast};
-use crate::storage::{DataKey, VoteContext, VoteOption, VoteRecord, VoteStatus, VotingSession};
+use crate::storage::{
+    GovernanceDataKey, VoteContext, VoteOption, VoteRecord, VoteStatus, VotingSession,
+};
 
 #[contract]
 pub struct GovernanceVoting;
@@ -18,12 +20,14 @@ impl GovernanceVoting {
     // INITIALIZATION
     // ========================================================================
 
-    pub fn init(env: Env, admin: Address) -> Result<(), Error> {
-        if env.storage().instance().has(&DataKey::Admin) {
-            return Err(Error::AlreadyInitialized);
+    pub fn init(env: Env, admin: Address) -> Result<(), GovernanceError> {
+        if env.storage().instance().has(&GovernanceDataKey::Admin) {
+            return Err(GovernanceError::AlreadyInitialized);
         }
         admin.require_auth();
-        env.storage().instance().set(&DataKey::Admin, &admin);
+        env.storage()
+            .instance()
+            .set(&GovernanceDataKey::Admin, &admin);
         Self::extend_instance_ttl(&env);
         Ok(())
     }
@@ -32,29 +36,29 @@ impl GovernanceVoting {
     // MODULE AUTHORIZATION
     // ========================================================================
 
-    pub fn add_authorized_module(env: Env, module: Address) -> Result<(), Error> {
+    pub fn add_authorized_module(env: Env, module: Address) -> Result<(), GovernanceError> {
         let admin: Address = env
             .storage()
             .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
+            .get(&GovernanceDataKey::Admin)
+            .ok_or(GovernanceError::NotInitialized)?;
         admin.require_auth();
         env.storage()
             .instance()
-            .set(&DataKey::AuthorizedModule(module), &true);
+            .set(&GovernanceDataKey::AuthorizedModule(module), &true);
         Ok(())
     }
 
-    pub fn remove_authorized_module(env: Env, module: Address) -> Result<(), Error> {
+    pub fn remove_authorized_module(env: Env, module: Address) -> Result<(), GovernanceError> {
         let admin: Address = env
             .storage()
             .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
+            .get(&GovernanceDataKey::Admin)
+            .ok_or(GovernanceError::NotInitialized)?;
         admin.require_auth();
         env.storage()
             .instance()
-            .remove(&DataKey::AuthorizedModule(module));
+            .remove(&GovernanceDataKey::AuthorizedModule(module));
         Ok(())
     }
 
@@ -73,13 +77,13 @@ impl GovernanceVoting {
         threshold: Option<u32>,
         quorum: Option<u32>,
         weight_by_reputation: bool,
-    ) -> Result<BytesN<32>, Error> {
+    ) -> Result<BytesN<32>, GovernanceError> {
         module.require_auth();
         if !Self::is_module_authorized_internal(&env, &module) {
-            return Err(Error::ModuleNotAuthorized);
+            return Err(GovernanceError::ModuleNotAuthorized);
         }
         if start_at >= end_at {
-            return Err(Error::InvalidTimeRange);
+            return Err(GovernanceError::InvalidTimeRange);
         }
 
         // session_id = sha256(context_byte ++ module_id_bytes)
@@ -99,7 +103,7 @@ impl GovernanceVoting {
 
         let option_count = options.len();
         for i in 0..option_count {
-            let label = options.get(i).ok_or(Error::InvalidOption)?;
+            let label = options.get(i).ok_or(GovernanceError::InvalidOption)?;
             let opt = VoteOption {
                 id: i,
                 label,
@@ -108,11 +112,12 @@ impl GovernanceVoting {
             };
             env.storage()
                 .persistent()
-                .set(&DataKey::VoteOption(session_id.clone(), i), &opt);
+                .set(&GovernanceDataKey::VoteOption(session_id.clone(), i), &opt);
         }
-        env.storage()
-            .persistent()
-            .set(&DataKey::OptionCount(session_id.clone()), &option_count);
+        env.storage().persistent().set(
+            &GovernanceDataKey::OptionCount(session_id.clone()),
+            &option_count,
+        );
 
         let session = VotingSession {
             session_id: session_id.clone(),
@@ -129,7 +134,7 @@ impl GovernanceVoting {
             weight_by_reputation,
         };
 
-        let session_key = DataKey::Session(session_id.clone());
+        let session_key = GovernanceDataKey::Session(session_id.clone());
         env.storage().persistent().set(&session_key, &session);
         Self::extend_persistent_ttl(&env, &session_key);
         Self::extend_instance_ttl(&env);
@@ -153,38 +158,38 @@ impl GovernanceVoting {
         voter: Address,
         session_id: BytesN<32>,
         option_id: u32,
-    ) -> Result<(), Error> {
+    ) -> Result<(), GovernanceError> {
         voter.require_auth();
 
         let mut session: VotingSession = env
             .storage()
             .persistent()
-            .get(&DataKey::Session(session_id.clone()))
-            .ok_or(Error::SessionNotFound)?;
+            .get(&GovernanceDataKey::Session(session_id.clone()))
+            .ok_or(GovernanceError::SessionNotFound)?;
 
         if session.status != VoteStatus::Active {
-            return Err(Error::SessionNotActive);
+            return Err(GovernanceError::SessionNotActive);
         }
         let now = env.ledger().timestamp();
         if now < session.start_at {
-            return Err(Error::VotingNotStarted);
+            return Err(GovernanceError::VotingNotStarted);
         }
         if now > session.end_at {
-            return Err(Error::SessionNotActive);
+            return Err(GovernanceError::SessionNotActive);
         }
 
-        let vote_key = DataKey::VoteRecord(session_id.clone(), voter.clone());
+        let vote_key = GovernanceDataKey::VoteRecord(session_id.clone(), voter.clone());
         if env.storage().persistent().has(&vote_key) {
-            return Err(Error::AlreadyVoted);
+            return Err(GovernanceError::AlreadyVoted);
         }
 
         // Validate option exists
-        let opt_key = DataKey::VoteOption(session_id.clone(), option_id);
+        let opt_key = GovernanceDataKey::VoteOption(session_id.clone(), option_id);
         let mut option: VoteOption = env
             .storage()
             .persistent()
             .get(&opt_key)
-            .ok_or(Error::InvalidOption)?;
+            .ok_or(GovernanceError::InvalidOption)?;
 
         let weight: u32 = if session.weight_by_reputation {
             // placeholder: actual weight fetched by caller
@@ -203,7 +208,7 @@ impl GovernanceVoting {
                 session.threshold_reached = true;
             }
         }
-        let sess_key = DataKey::Session(session_id.clone());
+        let sess_key = GovernanceDataKey::Session(session_id.clone());
         env.storage().persistent().set(&sess_key, &session);
         Self::extend_persistent_ttl(&env, &sess_key);
         Self::extend_instance_ttl(&env);
@@ -230,45 +235,45 @@ impl GovernanceVoting {
     // SESSION LIFECYCLE
     // ========================================================================
 
-    pub fn conclude_session(env: Env, session_id: BytesN<32>) -> Result<(), Error> {
+    pub fn conclude_session(env: Env, session_id: BytesN<32>) -> Result<(), GovernanceError> {
         let mut session: VotingSession = env
             .storage()
             .persistent()
-            .get(&DataKey::Session(session_id.clone()))
-            .ok_or(Error::SessionNotFound)?;
+            .get(&GovernanceDataKey::Session(session_id.clone()))
+            .ok_or(GovernanceError::SessionNotFound)?;
 
         if env.ledger().timestamp() <= session.end_at {
-            return Err(Error::SessionNotEnded);
+            return Err(GovernanceError::SessionNotEnded);
         }
 
         session.status = VoteStatus::Concluded;
         env.storage()
             .persistent()
-            .set(&DataKey::Session(session_id.clone()), &session);
+            .set(&GovernanceDataKey::Session(session_id.clone()), &session);
 
         SessionConcluded { session_id }.publish(&env);
 
         Ok(())
     }
 
-    pub fn cancel_session(env: Env, session_id: BytesN<32>) -> Result<(), Error> {
+    pub fn cancel_session(env: Env, session_id: BytesN<32>) -> Result<(), GovernanceError> {
         let admin: Address = env
             .storage()
             .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
+            .get(&GovernanceDataKey::Admin)
+            .ok_or(GovernanceError::NotInitialized)?;
         admin.require_auth();
 
         let mut session: VotingSession = env
             .storage()
             .persistent()
-            .get(&DataKey::Session(session_id.clone()))
-            .ok_or(Error::SessionNotFound)?;
+            .get(&GovernanceDataKey::Session(session_id.clone()))
+            .ok_or(GovernanceError::SessionNotFound)?;
 
         session.status = VoteStatus::Cancelled;
         env.storage()
             .persistent()
-            .set(&DataKey::Session(session_id.clone()), &session);
+            .set(&GovernanceDataKey::Session(session_id.clone()), &session);
 
         Ok(())
     }
@@ -283,40 +288,44 @@ impl GovernanceVoting {
         module: Address,
         amount: i128,
         option_id: u32,
-    ) -> Result<(), Error> {
+    ) -> Result<(), GovernanceError> {
         module.require_auth();
         if !Self::is_module_authorized_internal(&env, &module) {
-            return Err(Error::ModuleNotAuthorized);
+            return Err(GovernanceError::ModuleNotAuthorized);
         }
 
         let session: VotingSession = env
             .storage()
             .persistent()
-            .get(&DataKey::Session(session_id.clone()))
-            .ok_or(Error::SessionNotFound)?;
+            .get(&GovernanceDataKey::Session(session_id.clone()))
+            .ok_or(GovernanceError::SessionNotFound)?;
 
         if session.status != VoteStatus::Active {
-            return Err(Error::SessionNotActive);
+            return Err(GovernanceError::SessionNotActive);
         }
 
         // Validate option exists
         let option_count: u32 = env
             .storage()
             .persistent()
-            .get(&DataKey::OptionCount(session_id.clone()))
+            .get(&GovernanceDataKey::OptionCount(session_id.clone()))
             .unwrap_or(0);
         if option_id >= option_count {
-            return Err(Error::InvalidOption);
+            return Err(GovernanceError::InvalidOption);
         }
 
         // Maintain running sum-of-sqrt per option for QF distribution
-        let sum_sqrt_key = DataKey::OptionSumSqrt(session_id.clone(), option_id);
+        let sum_sqrt_key = GovernanceDataKey::OptionSumSqrt(session_id.clone(), option_id);
         let old_sum_sqrt: i128 = env.storage().persistent().get(&sum_sqrt_key).unwrap_or(0);
 
         // We don't track per-donor here for simplicity — each call is a new donation
-        let scaled_amount = amount.checked_mul(1_000_000).ok_or(Error::Overflow)?;
-        let sqrt_val = int_sqrt_i128(scaled_amount).ok_or(Error::InvalidOption)?;
-        let new_sum_sqrt = old_sum_sqrt.checked_add(sqrt_val).ok_or(Error::Overflow)?;
+        let scaled_amount = amount
+            .checked_mul(1_000_000)
+            .ok_or(GovernanceError::Overflow)?;
+        let sqrt_val = int_sqrt_i128(scaled_amount).ok_or(GovernanceError::InvalidOption)?;
+        let new_sum_sqrt = old_sum_sqrt
+            .checked_add(sqrt_val)
+            .ok_or(GovernanceError::Overflow)?;
         env.storage().persistent().set(&sum_sqrt_key, &new_sum_sqrt);
 
         QFDonationRecorded {
@@ -334,21 +343,21 @@ impl GovernanceVoting {
         env: Env,
         session_id: BytesN<32>,
         matching_pool: i128,
-    ) -> Result<Vec<(u32, i128)>, Error> {
+    ) -> Result<Vec<(u32, i128)>, GovernanceError> {
         let session: VotingSession = env
             .storage()
             .persistent()
-            .get(&DataKey::Session(session_id.clone()))
-            .ok_or(Error::SessionNotFound)?;
+            .get(&GovernanceDataKey::Session(session_id.clone()))
+            .ok_or(GovernanceError::SessionNotFound)?;
 
         if env.ledger().timestamp() <= session.end_at {
-            return Err(Error::SessionNotEnded);
+            return Err(GovernanceError::SessionNotEnded);
         }
 
         let option_count: u32 = env
             .storage()
             .persistent()
-            .get(&DataKey::OptionCount(session_id.clone()))
+            .get(&GovernanceDataKey::OptionCount(session_id.clone()))
             .unwrap_or(0);
 
         // Use per-option sum_sqrt maintained by record_qf_donation
@@ -357,11 +366,15 @@ impl GovernanceVoting {
         let mut total_squares: i128 = 0;
 
         for i in 0..option_count {
-            let sum_sqrt_key = DataKey::OptionSumSqrt(session_id.clone(), i);
+            let sum_sqrt_key = GovernanceDataKey::OptionSumSqrt(session_id.clone(), i);
             let sum_sqrt: i128 = env.storage().persistent().get(&sum_sqrt_key).unwrap_or(0);
-            let sq = sum_sqrt.checked_mul(sum_sqrt).ok_or(Error::Overflow)?;
+            let sq = sum_sqrt
+                .checked_mul(sum_sqrt)
+                .ok_or(GovernanceError::Overflow)?;
             squares.push_back(sq);
-            total_squares = total_squares.checked_add(sq).ok_or(Error::Overflow)?;
+            total_squares = total_squares
+                .checked_add(sq)
+                .ok_or(GovernanceError::Overflow)?;
         }
 
         if total_squares == 0 {
@@ -372,12 +385,12 @@ impl GovernanceVoting {
         }
 
         for i in 0..option_count {
-            let sq = squares.get(i).ok_or(Error::InvalidOption)?;
+            let sq = squares.get(i).ok_or(GovernanceError::InvalidOption)?;
             let share = sq
                 .checked_mul(matching_pool)
-                .ok_or(Error::Overflow)?
+                .ok_or(GovernanceError::Overflow)?
                 .checked_div(total_squares)
-                .ok_or(Error::Overflow)?;
+                .ok_or(GovernanceError::Overflow)?;
             results.push_back((i, share));
         }
 
@@ -388,29 +401,32 @@ impl GovernanceVoting {
     // QUERY FUNCTIONS
     // ========================================================================
 
-    pub fn get_session(env: Env, session_id: BytesN<32>) -> Result<VotingSession, Error> {
-        let key = DataKey::Session(session_id);
+    pub fn get_session(env: Env, session_id: BytesN<32>) -> Result<VotingSession, GovernanceError> {
+        let key = GovernanceDataKey::Session(session_id);
         let session = env
             .storage()
             .persistent()
             .get(&key)
-            .ok_or(Error::SessionNotFound)?;
+            .ok_or(GovernanceError::SessionNotFound)?;
         Self::extend_persistent_ttl(&env, &key);
         Self::extend_instance_ttl(&env);
         Ok(session)
     }
 
-    pub fn get_result(env: Env, session_id: BytesN<32>) -> Result<Vec<VoteOption>, Error> {
+    pub fn get_result(
+        env: Env,
+        session_id: BytesN<32>,
+    ) -> Result<Vec<VoteOption>, GovernanceError> {
         let _session: VotingSession = env
             .storage()
             .persistent()
-            .get(&DataKey::Session(session_id.clone()))
-            .ok_or(Error::SessionNotFound)?;
+            .get(&GovernanceDataKey::Session(session_id.clone()))
+            .ok_or(GovernanceError::SessionNotFound)?;
 
         let option_count: u32 = env
             .storage()
             .persistent()
-            .get(&DataKey::OptionCount(session_id.clone()))
+            .get(&GovernanceDataKey::OptionCount(session_id.clone()))
             .unwrap_or(0);
 
         let mut results = Vec::new(&env);
@@ -418,8 +434,8 @@ impl GovernanceVoting {
             let opt: VoteOption = env
                 .storage()
                 .persistent()
-                .get(&DataKey::VoteOption(session_id.clone(), i))
-                .ok_or(Error::InvalidOption)?;
+                .get(&GovernanceDataKey::VoteOption(session_id.clone(), i))
+                .ok_or(GovernanceError::InvalidOption)?;
             results.push_back(opt);
         }
         Ok(results)
@@ -429,25 +445,25 @@ impl GovernanceVoting {
         env: Env,
         session_id: BytesN<32>,
         option_id: u32,
-    ) -> Result<VoteOption, Error> {
+    ) -> Result<VoteOption, GovernanceError> {
         env.storage()
             .persistent()
-            .get(&DataKey::VoteOption(session_id, option_id))
-            .ok_or(Error::InvalidOption)
+            .get(&GovernanceDataKey::VoteOption(session_id, option_id))
+            .ok_or(GovernanceError::InvalidOption)
     }
 
     pub fn has_voted(env: Env, session_id: BytesN<32>, voter: Address) -> bool {
         env.storage()
             .persistent()
-            .has(&DataKey::VoteRecord(session_id, voter))
+            .has(&GovernanceDataKey::VoteRecord(session_id, voter))
     }
 
-    pub fn threshold_reached(env: Env, session_id: BytesN<32>) -> Result<bool, Error> {
+    pub fn threshold_reached(env: Env, session_id: BytesN<32>) -> Result<bool, GovernanceError> {
         let session: VotingSession = env
             .storage()
             .persistent()
-            .get(&DataKey::Session(session_id))
-            .ok_or(Error::SessionNotFound)?;
+            .get(&GovernanceDataKey::Session(session_id))
+            .ok_or(GovernanceError::SessionNotFound)?;
         Ok(session.threshold_reached)
     }
 
@@ -461,7 +477,7 @@ impl GovernanceVoting {
             .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND);
     }
 
-    fn extend_persistent_ttl(env: &Env, key: &DataKey) {
+    fn extend_persistent_ttl(env: &Env, key: &GovernanceDataKey) {
         env.storage()
             .persistent()
             .extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND);
@@ -469,7 +485,7 @@ impl GovernanceVoting {
 
     fn is_module_authorized_internal(env: &Env, module: &Address) -> bool {
         // Admin is always authorized
-        let admin: Option<Address> = env.storage().instance().get(&DataKey::Admin);
+        let admin: Option<Address> = env.storage().instance().get(&GovernanceDataKey::Admin);
         if let Some(a) = admin {
             if module == &a {
                 return true;
@@ -477,7 +493,7 @@ impl GovernanceVoting {
         }
         env.storage()
             .instance()
-            .get(&DataKey::AuthorizedModule(module.clone()))
+            .get(&GovernanceDataKey::AuthorizedModule(module.clone()))
             .unwrap_or(false)
     }
 }

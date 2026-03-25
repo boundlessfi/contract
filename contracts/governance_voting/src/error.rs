@@ -3,7 +3,7 @@ use soroban_sdk::contracterror;
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
-pub enum Error {
+pub enum GovernanceError {
     AlreadyInitialized = 500,
     NotInitialized = 501,
     NotAuthorized = 502,

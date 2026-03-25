@@ -1,9 +1,9 @@
-use crate::error::Error;
+use crate::error::EscrowError;
 use crate::events::{
     FeeCharged, FeeRateUpdated, InsuranceClaimed, InsuranceContributed, PoolCreated, PoolLocked,
     Refunded, SlotReleased,
 };
-use crate::storage::{DataKey, EscrowPool, FeeConfig, FeeRecord, InsuranceFund, ReleaseSlot};
+use crate::storage::{EscrowDataKey, EscrowPool, FeeConfig, FeeRecord, InsuranceFund, ReleaseSlot};
 use boundless_types::ttl::{
     INSTANCE_TTL_EXTEND, INSTANCE_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND, PERSISTENT_TTL_THRESHOLD,
 };
@@ -23,20 +23,22 @@ impl CoreEscrow {
     // INITIALIZATION
     // ========================================================================
 
-    pub fn init(env: Env, admin: Address, treasury: Address) -> Result<(), Error> {
-        if env.storage().instance().has(&DataKey::Admin) {
-            return Err(Error::AlreadyInitialized);
+    pub fn init(env: Env, admin: Address, treasury: Address) -> Result<(), EscrowError> {
+        if env.storage().instance().has(&EscrowDataKey::Admin) {
+            return Err(EscrowError::AlreadyInitialized);
         }
         admin.require_auth();
-        env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage().instance().set(&DataKey::Treasury, &treasury);
+        env.storage().instance().set(&EscrowDataKey::Admin, &admin);
         env.storage()
             .instance()
-            .set(&DataKey::FeeConfig, &FeeConfig::default_config());
+            .set(&EscrowDataKey::Treasury, &treasury);
         env.storage()
             .instance()
-            .set(&DataKey::RoutingPaused, &false);
-        env.storage().instance().set(&DataKey::Version, &1u32);
+            .set(&EscrowDataKey::FeeConfig, &FeeConfig::default_config());
+        env.storage()
+            .instance()
+            .set(&EscrowDataKey::RoutingPaused, &false);
+        env.storage().instance().set(&EscrowDataKey::Version, &1u32);
         Self::extend_instance_ttl(&env);
         Ok(())
     }
@@ -45,146 +47,152 @@ impl CoreEscrow {
     // QUERIES
     // ========================================================================
 
-    pub fn get_admin(env: Env) -> Result<Address, Error> {
+    pub fn get_admin(env: Env) -> Result<Address, EscrowError> {
         env.storage()
             .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)
+            .get(&EscrowDataKey::Admin)
+            .ok_or(EscrowError::NotInitialized)
     }
 
-    pub fn get_treasury(env: Env) -> Result<Address, Error> {
+    pub fn get_treasury(env: Env) -> Result<Address, EscrowError> {
         env.storage()
             .instance()
-            .get(&DataKey::Treasury)
-            .ok_or(Error::NotInitialized)
+            .get(&EscrowDataKey::Treasury)
+            .ok_or(EscrowError::NotInitialized)
     }
 
-    pub fn get_pool(env: Env, pool_id: BytesN<32>) -> Result<EscrowPool, Error> {
-        let key = DataKey::EscrowPool(pool_id);
+    pub fn get_pool(env: Env, pool_id: BytesN<32>) -> Result<EscrowPool, EscrowError> {
+        let key = EscrowDataKey::EscrowPool(pool_id);
         let pool: EscrowPool = env
             .storage()
             .persistent()
             .get(&key)
-            .ok_or(Error::PoolNotFound)?;
+            .ok_or(EscrowError::PoolNotFound)?;
         Self::extend_persistent_ttl(&env, &key);
         Self::extend_instance_ttl(&env);
         Ok(pool)
     }
 
-    pub fn get_slot(env: Env, pool_id: BytesN<32>, index: u32) -> Result<ReleaseSlot, Error> {
+    pub fn get_slot(env: Env, pool_id: BytesN<32>, index: u32) -> Result<ReleaseSlot, EscrowError> {
         env.storage()
             .persistent()
-            .get(&DataKey::ReleaseSlot(pool_id, index))
-            .ok_or(Error::SlotNotFound)
+            .get(&EscrowDataKey::ReleaseSlot(pool_id, index))
+            .ok_or(EscrowError::SlotNotFound)
     }
 
-    pub fn get_unreleased(env: Env, pool_id: BytesN<32>) -> Result<i128, Error> {
+    pub fn get_unreleased(env: Env, pool_id: BytesN<32>) -> Result<i128, EscrowError> {
         let pool: EscrowPool = env
             .storage()
             .persistent()
-            .get(&DataKey::EscrowPool(pool_id))
-            .ok_or(Error::PoolNotFound)?;
+            .get(&EscrowDataKey::EscrowPool(pool_id))
+            .ok_or(EscrowError::PoolNotFound)?;
         pool.total_deposited
             .checked_sub(pool.total_released)
-            .ok_or(Error::Overflow)?
+            .ok_or(EscrowError::Overflow)?
             .checked_sub(pool.total_refunded)
-            .ok_or(Error::Overflow)
+            .ok_or(EscrowError::Overflow)
     }
 
-    pub fn is_locked(env: Env, pool_id: BytesN<32>) -> Result<bool, Error> {
+    pub fn is_locked(env: Env, pool_id: BytesN<32>) -> Result<bool, EscrowError> {
         let pool: EscrowPool = env
             .storage()
             .persistent()
-            .get(&DataKey::EscrowPool(pool_id))
-            .ok_or(Error::PoolNotFound)?;
+            .get(&EscrowDataKey::EscrowPool(pool_id))
+            .ok_or(EscrowError::PoolNotFound)?;
         Ok(pool.locked)
     }
 
     pub fn get_insurance_balance(env: Env) -> i128 {
         env.storage()
             .instance()
-            .get(&DataKey::InsuranceFund)
+            .get(&EscrowDataKey::InsuranceFund)
             .map(|f: InsuranceFund| f.balance)
             .unwrap_or(0)
     }
 
-    pub fn get_fee_config(env: Env) -> Result<FeeConfig, Error> {
+    pub fn get_fee_config(env: Env) -> Result<FeeConfig, EscrowError> {
         env.storage()
             .instance()
-            .get(&DataKey::FeeConfig)
-            .ok_or(Error::NotInitialized)
+            .get(&EscrowDataKey::FeeConfig)
+            .ok_or(EscrowError::NotInitialized)
     }
 
-    pub fn get_fee_rate(env: Env, sub_type: SubType) -> Result<u32, Error> {
+    pub fn get_fee_rate(env: Env, sub_type: SubType) -> Result<u32, EscrowError> {
         let config: FeeConfig = env
             .storage()
             .instance()
-            .get(&DataKey::FeeConfig)
-            .ok_or(Error::NotInitialized)?;
+            .get(&EscrowDataKey::FeeConfig)
+            .ok_or(EscrowError::NotInitialized)?;
         Ok(config.get_fee_bps(&sub_type))
     }
 
-    pub fn calculate_fee(env: Env, gross: i128, sub_type: SubType) -> Result<(i128, i128), Error> {
+    pub fn calculate_fee(
+        env: Env,
+        gross: i128,
+        sub_type: SubType,
+    ) -> Result<(i128, i128), EscrowError> {
         let config: FeeConfig = env
             .storage()
             .instance()
-            .get(&DataKey::FeeConfig)
-            .ok_or(Error::NotInitialized)?;
+            .get(&EscrowDataKey::FeeConfig)
+            .ok_or(EscrowError::NotInitialized)?;
         let fee_bps = config.get_fee_bps(&sub_type);
-        let fee = math::calculate_fee_bps(gross, fee_bps).ok_or(Error::Overflow)?;
-        let net = gross.checked_sub(fee).ok_or(Error::Overflow)?;
+        let fee = math::calculate_fee_bps(gross, fee_bps).ok_or(EscrowError::Overflow)?;
+        let net = gross.checked_sub(fee).ok_or(EscrowError::Overflow)?;
         Ok((fee, net))
     }
 
-    pub fn calculate_pledge_cost(env: Env, pledge: i128) -> Result<i128, Error> {
+    pub fn calculate_pledge_cost(env: Env, pledge: i128) -> Result<i128, EscrowError> {
         let config: FeeConfig = env
             .storage()
             .instance()
-            .get(&DataKey::FeeConfig)
-            .ok_or(Error::NotInitialized)?;
-        let fee =
-            math::calculate_fee_bps(pledge, config.crowdfund_fee_bps).ok_or(Error::Overflow)?;
-        pledge.checked_add(fee).ok_or(Error::Overflow)
+            .get(&EscrowDataKey::FeeConfig)
+            .ok_or(EscrowError::NotInitialized)?;
+        let fee = math::calculate_fee_bps(pledge, config.crowdfund_fee_bps)
+            .ok_or(EscrowError::Overflow)?;
+        pledge.checked_add(fee).ok_or(EscrowError::Overflow)
     }
 
-    pub fn get_fee_record(env: Env, pool_id: BytesN<32>) -> Result<FeeRecord, Error> {
+    pub fn get_fee_record(env: Env, pool_id: BytesN<32>) -> Result<FeeRecord, EscrowError> {
         env.storage()
             .persistent()
-            .get(&DataKey::FeeRecord(pool_id))
-            .ok_or(Error::PoolNotFound)
+            .get(&EscrowDataKey::FeeRecord(pool_id))
+            .ok_or(EscrowError::PoolNotFound)
     }
 
     // ========================================================================
     // ADMIN FUNCTIONS
     // ========================================================================
 
-    pub fn update_admin(env: Env, new_admin: Address) -> Result<(), Error> {
-        let admin = Self::require_admin(&env)?;
-        admin.require_auth();
-        env.storage().instance().set(&DataKey::Admin, &new_admin);
-        Ok(())
-    }
-
-    pub fn update_treasury(env: Env, new_treasury: Address) -> Result<(), Error> {
+    pub fn update_admin(env: Env, new_admin: Address) -> Result<(), EscrowError> {
         let admin = Self::require_admin(&env)?;
         admin.require_auth();
         env.storage()
             .instance()
-            .set(&DataKey::Treasury, &new_treasury);
+            .set(&EscrowDataKey::Admin, &new_admin);
         Ok(())
     }
 
-    pub fn set_fee_rate(env: Env, sub_type: SubType, new_bps: u32) -> Result<(), Error> {
+    pub fn update_treasury(env: Env, new_treasury: Address) -> Result<(), EscrowError> {
+        let admin = Self::require_admin(&env)?;
+        admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&EscrowDataKey::Treasury, &new_treasury);
+        Ok(())
+    }
+
+    pub fn set_fee_rate(env: Env, sub_type: SubType, new_bps: u32) -> Result<(), EscrowError> {
         let admin = Self::require_admin(&env)?;
         admin.require_auth();
         if new_bps > MAX_FEE_BPS {
-            return Err(Error::RateExceedsLimit);
+            return Err(EscrowError::RateExceedsLimit);
         }
         let mut config: FeeConfig = env
             .storage()
             .instance()
-            .get(&DataKey::FeeConfig)
-            .ok_or(Error::NotInitialized)?;
+            .get(&EscrowDataKey::FeeConfig)
+            .ok_or(EscrowError::NotInitialized)?;
         let old_bps = config.get_fee_bps(&sub_type);
         match sub_type {
             SubType::BountyFCFS
@@ -197,62 +205,68 @@ impl CoreEscrow {
             | SubType::GrantQFMatchingPool => config.grant_fee_bps = new_bps,
             SubType::HackathonMain | SubType::HackathonTrack => config.hackathon_fee_bps = new_bps,
         }
-        env.storage().instance().set(&DataKey::FeeConfig, &config);
+        env.storage()
+            .instance()
+            .set(&EscrowDataKey::FeeConfig, &config);
         FeeRateUpdated { old_bps, new_bps }.publish(&env);
         Ok(())
     }
 
-    pub fn set_insurance_cut(env: Env, new_bps: u32) -> Result<(), Error> {
+    pub fn set_insurance_cut(env: Env, new_bps: u32) -> Result<(), EscrowError> {
         let admin = Self::require_admin(&env)?;
         admin.require_auth();
         if !(MIN_INSURANCE_CUT_BPS..=MAX_INSURANCE_CUT_BPS).contains(&new_bps) {
-            return Err(Error::InsuranceCutOutOfRange);
+            return Err(EscrowError::InsuranceCutOutOfRange);
         }
         let mut config: FeeConfig = env
             .storage()
             .instance()
-            .get(&DataKey::FeeConfig)
-            .ok_or(Error::NotInitialized)?;
+            .get(&EscrowDataKey::FeeConfig)
+            .ok_or(EscrowError::NotInitialized)?;
         config.insurance_cut_bps = new_bps;
-        env.storage().instance().set(&DataKey::FeeConfig, &config);
+        env.storage()
+            .instance()
+            .set(&EscrowDataKey::FeeConfig, &config);
         Ok(())
     }
 
-    pub fn pause_routing(env: Env) -> Result<(), Error> {
-        let admin = Self::require_admin(&env)?;
-        admin.require_auth();
-        env.storage().instance().set(&DataKey::RoutingPaused, &true);
-        Ok(())
-    }
-
-    pub fn resume_routing(env: Env) -> Result<(), Error> {
+    pub fn pause_routing(env: Env) -> Result<(), EscrowError> {
         let admin = Self::require_admin(&env)?;
         admin.require_auth();
         env.storage()
             .instance()
-            .set(&DataKey::RoutingPaused, &false);
+            .set(&EscrowDataKey::RoutingPaused, &true);
         Ok(())
     }
 
-    pub fn authorize_module(env: Env, module_addr: Address) -> Result<(), Error> {
+    pub fn resume_routing(env: Env) -> Result<(), EscrowError> {
         let admin = Self::require_admin(&env)?;
         admin.require_auth();
         env.storage()
             .instance()
-            .set(&DataKey::AuthorizedModule(module_addr), &true);
+            .set(&EscrowDataKey::RoutingPaused, &false);
         Ok(())
     }
 
-    pub fn deauthorize_module(env: Env, module_addr: Address) -> Result<(), Error> {
+    pub fn authorize_module(env: Env, module_addr: Address) -> Result<(), EscrowError> {
         let admin = Self::require_admin(&env)?;
         admin.require_auth();
         env.storage()
             .instance()
-            .remove(&DataKey::AuthorizedModule(module_addr));
+            .set(&EscrowDataKey::AuthorizedModule(module_addr), &true);
         Ok(())
     }
 
-    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
+    pub fn deauthorize_module(env: Env, module_addr: Address) -> Result<(), EscrowError> {
+        let admin = Self::require_admin(&env)?;
+        admin.require_auth();
+        env.storage()
+            .instance()
+            .remove(&EscrowDataKey::AuthorizedModule(module_addr));
+        Ok(())
+    }
+
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), EscrowError> {
         let admin = Self::require_admin(&env)?;
         admin.require_auth();
         env.deployer().update_current_contract_wasm(new_wasm_hash);
@@ -272,18 +286,18 @@ impl CoreEscrow {
         asset: Address,
         expires_at: u64,
         authorized_caller: Address,
-    ) -> Result<BytesN<32>, Error> {
+    ) -> Result<BytesN<32>, EscrowError> {
         owner.require_auth();
         if total_amount < 0 {
-            return Err(Error::InvalidAmount);
+            return Err(EscrowError::InvalidAmount);
         }
         let pool_id = Self::compute_pool_id(&env, &module, module_id);
         if env
             .storage()
             .persistent()
-            .has(&DataKey::EscrowPool(pool_id.clone()))
+            .has(&EscrowDataKey::EscrowPool(pool_id.clone()))
         {
-            return Err(Error::PoolAlreadyExists);
+            return Err(EscrowError::PoolAlreadyExists);
         }
         if total_amount > 0 {
             token::Client::new(&env, &asset).transfer(
@@ -305,7 +319,7 @@ impl CoreEscrow {
             created_at: env.ledger().timestamp(),
             expires_at,
         };
-        let key = DataKey::EscrowPool(pool_id.clone());
+        let key = EscrowDataKey::EscrowPool(pool_id.clone());
         env.storage().persistent().set(&key, &pool);
         Self::extend_persistent_ttl(&env, &key);
         Self::extend_instance_ttl(&env);
@@ -324,19 +338,19 @@ impl CoreEscrow {
         pool_id: BytesN<32>,
         amount: i128,
         payer: Address,
-    ) -> Result<(), Error> {
+    ) -> Result<(), EscrowError> {
         payer.require_auth();
         if amount <= 0 {
-            return Err(Error::InvalidAmount);
+            return Err(EscrowError::InvalidAmount);
         }
-        let key = DataKey::EscrowPool(pool_id);
+        let key = EscrowDataKey::EscrowPool(pool_id);
         let mut pool: EscrowPool = env
             .storage()
             .persistent()
             .get(&key)
-            .ok_or(Error::PoolNotFound)?;
+            .ok_or(EscrowError::PoolNotFound)?;
         if pool.locked {
-            return Err(Error::PoolLocked);
+            return Err(EscrowError::PoolLocked);
         }
         token::Client::new(&env, &pool.asset).transfer(
             &payer,
@@ -346,21 +360,21 @@ impl CoreEscrow {
         pool.total_deposited = pool
             .total_deposited
             .checked_add(amount)
-            .ok_or(Error::Overflow)?;
+            .ok_or(EscrowError::Overflow)?;
         env.storage().persistent().set(&key, &pool);
         Ok(())
     }
 
-    pub fn lock_pool(env: Env, pool_id: BytesN<32>) -> Result<(), Error> {
-        let key = DataKey::EscrowPool(pool_id.clone());
+    pub fn lock_pool(env: Env, pool_id: BytesN<32>) -> Result<(), EscrowError> {
+        let key = EscrowDataKey::EscrowPool(pool_id.clone());
         let mut pool: EscrowPool = env
             .storage()
             .persistent()
             .get(&key)
-            .ok_or(Error::PoolNotFound)?;
+            .ok_or(EscrowError::PoolNotFound)?;
         pool.authorized_caller.require_auth();
         if pool.locked {
-            return Err(Error::PoolLocked);
+            return Err(EscrowError::PoolLocked);
         }
         pool.locked = true;
         env.storage().persistent().set(&key, &pool);
@@ -375,13 +389,13 @@ impl CoreEscrow {
         env: Env,
         pool_id: BytesN<32>,
         slots: Vec<(Address, i128)>,
-    ) -> Result<(), Error> {
-        let key = DataKey::EscrowPool(pool_id.clone());
+    ) -> Result<(), EscrowError> {
+        let key = EscrowDataKey::EscrowPool(pool_id.clone());
         let pool: EscrowPool = env
             .storage()
             .persistent()
             .get(&key)
-            .ok_or(Error::PoolNotFound)?;
+            .ok_or(EscrowError::PoolNotFound)?;
         pool.authorized_caller.require_auth();
         let mut total_slot_amount: i128 = 0;
         for (i, (recipient, amount)) in slots.iter().enumerate() {
@@ -393,19 +407,20 @@ impl CoreEscrow {
                 released: false,
                 released_at: None,
             };
-            env.storage()
-                .persistent()
-                .set(&DataKey::ReleaseSlot(pool_id.clone(), i as u32), &slot);
+            env.storage().persistent().set(
+                &EscrowDataKey::ReleaseSlot(pool_id.clone(), i as u32),
+                &slot,
+            );
             total_slot_amount = total_slot_amount
                 .checked_add(amount)
-                .ok_or(Error::Overflow)?;
+                .ok_or(EscrowError::Overflow)?;
         }
         if total_slot_amount > pool.total_deposited {
-            return Err(Error::SlotsExceedDeposit);
+            return Err(EscrowError::SlotsExceedDeposit);
         }
         env.storage()
             .persistent()
-            .set(&DataKey::SlotCount(pool_id), &slots.len());
+            .set(&EscrowDataKey::SlotCount(pool_id), &slots.len());
         Ok(())
     }
 
@@ -413,29 +428,29 @@ impl CoreEscrow {
     // RELEASE FUNCTIONS
     // ========================================================================
 
-    pub fn release_slot(env: Env, pool_id: BytesN<32>, slot_index: u32) -> Result<(), Error> {
-        let pool_key = DataKey::EscrowPool(pool_id.clone());
+    pub fn release_slot(env: Env, pool_id: BytesN<32>, slot_index: u32) -> Result<(), EscrowError> {
+        let pool_key = EscrowDataKey::EscrowPool(pool_id.clone());
         let mut pool: EscrowPool = env
             .storage()
             .persistent()
             .get(&pool_key)
-            .ok_or(Error::PoolNotFound)?;
+            .ok_or(EscrowError::PoolNotFound)?;
         pool.authorized_caller.require_auth();
-        let slot_key = DataKey::ReleaseSlot(pool_id.clone(), slot_index);
+        let slot_key = EscrowDataKey::ReleaseSlot(pool_id.clone(), slot_index);
         let mut slot: ReleaseSlot = env
             .storage()
             .persistent()
             .get(&slot_key)
-            .ok_or(Error::SlotNotFound)?;
+            .ok_or(EscrowError::SlotNotFound)?;
         if slot.released {
-            return Err(Error::SlotAlreadyReleased);
+            return Err(EscrowError::SlotAlreadyReleased);
         }
         slot.released = true;
         slot.released_at = Some(env.ledger().timestamp());
         pool.total_released = pool
             .total_released
             .checked_add(slot.amount)
-            .ok_or(Error::Overflow)?;
+            .ok_or(EscrowError::Overflow)?;
         env.storage().persistent().set(&pool_key, &pool);
         env.storage().persistent().set(&slot_key, &slot);
         token::Client::new(&env, &pool.asset).transfer(
@@ -458,30 +473,30 @@ impl CoreEscrow {
         pool_id: BytesN<32>,
         recipient: Address,
         amount: i128,
-    ) -> Result<(), Error> {
+    ) -> Result<(), EscrowError> {
         if amount <= 0 {
-            return Err(Error::InvalidAmount);
+            return Err(EscrowError::InvalidAmount);
         }
-        let pool_key = DataKey::EscrowPool(pool_id.clone());
+        let pool_key = EscrowDataKey::EscrowPool(pool_id.clone());
         let mut pool: EscrowPool = env
             .storage()
             .persistent()
             .get(&pool_key)
-            .ok_or(Error::PoolNotFound)?;
+            .ok_or(EscrowError::PoolNotFound)?;
         pool.authorized_caller.require_auth();
         let remaining = pool
             .total_deposited
             .checked_sub(pool.total_released)
-            .ok_or(Error::Overflow)?
+            .ok_or(EscrowError::Overflow)?
             .checked_sub(pool.total_refunded)
-            .ok_or(Error::Overflow)?;
+            .ok_or(EscrowError::Overflow)?;
         if amount > remaining {
-            return Err(Error::InsufficientFunds);
+            return Err(EscrowError::InsufficientFunds);
         }
         pool.total_released = pool
             .total_released
             .checked_add(amount)
-            .ok_or(Error::Overflow)?;
+            .ok_or(EscrowError::Overflow)?;
         env.storage().persistent().set(&pool_key, &pool);
         token::Client::new(&env, &pool.asset).transfer(
             &env.current_contract_address(),
@@ -502,25 +517,25 @@ impl CoreEscrow {
     // REFUND FUNCTIONS
     // ========================================================================
 
-    pub fn refund_all(env: Env, pool_id: BytesN<32>) -> Result<(), Error> {
-        let pool_key = DataKey::EscrowPool(pool_id.clone());
+    pub fn refund_all(env: Env, pool_id: BytesN<32>) -> Result<(), EscrowError> {
+        let pool_key = EscrowDataKey::EscrowPool(pool_id.clone());
         let mut pool: EscrowPool = env
             .storage()
             .persistent()
             .get(&pool_key)
-            .ok_or(Error::PoolNotFound)?;
+            .ok_or(EscrowError::PoolNotFound)?;
         pool.authorized_caller.require_auth();
         let remaining = pool
             .total_deposited
             .checked_sub(pool.total_released)
-            .ok_or(Error::Overflow)?
+            .ok_or(EscrowError::Overflow)?
             .checked_sub(pool.total_refunded)
-            .ok_or(Error::Overflow)?;
+            .ok_or(EscrowError::Overflow)?;
         if remaining > 0 {
             pool.total_refunded = pool
                 .total_refunded
                 .checked_add(remaining)
-                .ok_or(Error::Overflow)?;
+                .ok_or(EscrowError::Overflow)?;
             env.storage().persistent().set(&pool_key, &pool);
             token::Client::new(&env, &pool.asset).transfer(
                 &env.current_contract_address(),
@@ -537,7 +552,7 @@ impl CoreEscrow {
         Ok(())
     }
 
-    pub fn refund_remaining(env: Env, pool_id: BytesN<32>) -> Result<(), Error> {
+    pub fn refund_remaining(env: Env, pool_id: BytesN<32>) -> Result<(), EscrowError> {
         Self::refund_all(env, pool_id)
     }
 
@@ -545,13 +560,13 @@ impl CoreEscrow {
         env: Env,
         pool_id: BytesN<32>,
         backers: Vec<(Address, i128)>,
-    ) -> Result<(), Error> {
-        let pool_key = DataKey::EscrowPool(pool_id.clone());
+    ) -> Result<(), EscrowError> {
+        let pool_key = EscrowDataKey::EscrowPool(pool_id.clone());
         let mut pool: EscrowPool = env
             .storage()
             .persistent()
             .get(&pool_key)
-            .ok_or(Error::PoolNotFound)?;
+            .ok_or(EscrowError::PoolNotFound)?;
         pool.authorized_caller.require_auth();
         let token_client = token::Client::new(&env, &pool.asset);
         let contract_addr = env.current_contract_address();
@@ -560,7 +575,7 @@ impl CoreEscrow {
                 pool.total_refunded = pool
                     .total_refunded
                     .checked_add(amount)
-                    .ok_or(Error::Overflow)?;
+                    .ok_or(EscrowError::Overflow)?;
                 token_client.transfer(&contract_addr, &backer, &amount);
                 Refunded {
                     pool_id: pool_id.clone(),
@@ -578,25 +593,30 @@ impl CoreEscrow {
     // INSURANCE FUND
     // ========================================================================
 
-    pub fn contribute_insurance(env: Env, amount: i128) -> Result<(), Error> {
+    pub fn contribute_insurance(env: Env, amount: i128) -> Result<(), EscrowError> {
         if amount <= 0 {
-            return Err(Error::InvalidAmount);
+            return Err(EscrowError::InvalidAmount);
         }
         let mut fund = env
             .storage()
             .instance()
-            .get(&DataKey::InsuranceFund)
+            .get(&EscrowDataKey::InsuranceFund)
             .unwrap_or(InsuranceFund {
                 balance: 0,
                 total_contributions: 0,
                 total_paid_out: 0,
             });
-        fund.balance = fund.balance.checked_add(amount).ok_or(Error::Overflow)?;
+        fund.balance = fund
+            .balance
+            .checked_add(amount)
+            .ok_or(EscrowError::Overflow)?;
         fund.total_contributions = fund
             .total_contributions
             .checked_add(amount)
-            .ok_or(Error::Overflow)?;
-        env.storage().instance().set(&DataKey::InsuranceFund, &fund);
+            .ok_or(EscrowError::Overflow)?;
+        env.storage()
+            .instance()
+            .set(&EscrowDataKey::InsuranceFund, &fund);
         InsuranceContributed { amount }.publish(&env);
         Ok(())
     }
@@ -606,23 +626,28 @@ impl CoreEscrow {
         claimant: Address,
         amount: i128,
         asset: Address,
-    ) -> Result<(), Error> {
+    ) -> Result<(), EscrowError> {
         let admin = Self::require_admin(&env)?;
         admin.require_auth();
         let mut fund: InsuranceFund = env
             .storage()
             .instance()
-            .get(&DataKey::InsuranceFund)
-            .ok_or(Error::NotInitialized)?;
+            .get(&EscrowDataKey::InsuranceFund)
+            .ok_or(EscrowError::NotInitialized)?;
         if amount > fund.balance {
-            return Err(Error::InsuranceInsufficient);
+            return Err(EscrowError::InsuranceInsufficient);
         }
-        fund.balance = fund.balance.checked_sub(amount).ok_or(Error::Overflow)?;
+        fund.balance = fund
+            .balance
+            .checked_sub(amount)
+            .ok_or(EscrowError::Overflow)?;
         fund.total_paid_out = fund
             .total_paid_out
             .checked_add(amount)
-            .ok_or(Error::Overflow)?;
-        env.storage().instance().set(&DataKey::InsuranceFund, &fund);
+            .ok_or(EscrowError::Overflow)?;
+        env.storage()
+            .instance()
+            .set(&EscrowDataKey::InsuranceFund, &fund);
         token::Client::new(&env, &asset).transfer(
             &env.current_contract_address(),
             &claimant,
@@ -643,27 +668,27 @@ impl CoreEscrow {
         gross_amount: i128,
         asset: Address,
         sub_type: SubType,
-    ) -> Result<i128, Error> {
+    ) -> Result<i128, EscrowError> {
         payer.require_auth();
         Self::require_not_paused(&env)?;
         if gross_amount <= 0 {
-            return Err(Error::InvalidAmount);
+            return Err(EscrowError::InvalidAmount);
         }
         let config: FeeConfig = env
             .storage()
             .instance()
-            .get(&DataKey::FeeConfig)
-            .ok_or(Error::NotInitialized)?;
+            .get(&EscrowDataKey::FeeConfig)
+            .ok_or(EscrowError::NotInitialized)?;
         let treasury: Address = env
             .storage()
             .instance()
-            .get(&DataKey::Treasury)
-            .ok_or(Error::NotInitialized)?;
+            .get(&EscrowDataKey::Treasury)
+            .ok_or(EscrowError::NotInitialized)?;
         let fee_bps = config.get_fee_bps(&sub_type);
-        let fee = math::calculate_fee_bps(gross_amount, fee_bps).ok_or(Error::Overflow)?;
+        let fee = math::calculate_fee_bps(gross_amount, fee_bps).ok_or(EscrowError::Overflow)?;
         let (treasury_cut, insurance_cut) =
-            math::split_fee(fee, config.insurance_cut_bps).ok_or(Error::Overflow)?;
-        let net = gross_amount.checked_sub(fee).ok_or(Error::Overflow)?;
+            math::split_fee(fee, config.insurance_cut_bps).ok_or(EscrowError::Overflow)?;
+        let net = gross_amount.checked_sub(fee).ok_or(EscrowError::Overflow)?;
         let token_client = token::Client::new(&env, &asset);
         let contract_addr = env.current_contract_address();
         if net > 0 {
@@ -676,16 +701,16 @@ impl CoreEscrow {
             token_client.transfer(&payer, &contract_addr, &insurance_cut);
             Self::_add_insurance(&env, insurance_cut)?;
         }
-        let pool_key = DataKey::EscrowPool(pool_id.clone());
+        let pool_key = EscrowDataKey::EscrowPool(pool_id.clone());
         let mut pool: EscrowPool = env
             .storage()
             .persistent()
             .get(&pool_key)
-            .ok_or(Error::PoolNotFound)?;
+            .ok_or(EscrowError::PoolNotFound)?;
         pool.total_deposited = pool
             .total_deposited
             .checked_add(net)
-            .ok_or(Error::Overflow)?;
+            .ok_or(EscrowError::Overflow)?;
         env.storage().persistent().set(&pool_key, &pool);
         let fee_record = FeeRecord {
             pool_id: pool_id.clone(),
@@ -700,7 +725,7 @@ impl CoreEscrow {
         };
         env.storage()
             .persistent()
-            .set(&DataKey::FeeRecord(pool_id.clone()), &fee_record);
+            .set(&EscrowDataKey::FeeRecord(pool_id.clone()), &fee_record);
         FeeCharged {
             pool_id,
             sub_type,
@@ -720,26 +745,26 @@ impl CoreEscrow {
         pool_id: BytesN<32>,
         pledge_amount: i128,
         asset: Address,
-    ) -> Result<i128, Error> {
+    ) -> Result<i128, EscrowError> {
         backer.require_auth();
         Self::require_not_paused(&env)?;
         if pledge_amount <= 0 {
-            return Err(Error::InvalidAmount);
+            return Err(EscrowError::InvalidAmount);
         }
         let config: FeeConfig = env
             .storage()
             .instance()
-            .get(&DataKey::FeeConfig)
-            .ok_or(Error::NotInitialized)?;
+            .get(&EscrowDataKey::FeeConfig)
+            .ok_or(EscrowError::NotInitialized)?;
         let treasury: Address = env
             .storage()
             .instance()
-            .get(&DataKey::Treasury)
-            .ok_or(Error::NotInitialized)?;
+            .get(&EscrowDataKey::Treasury)
+            .ok_or(EscrowError::NotInitialized)?;
         let fee = math::calculate_fee_bps(pledge_amount, config.crowdfund_fee_bps)
-            .ok_or(Error::Overflow)?;
+            .ok_or(EscrowError::Overflow)?;
         let (treasury_cut, insurance_cut) =
-            math::split_fee(fee, config.insurance_cut_bps).ok_or(Error::Overflow)?;
+            math::split_fee(fee, config.insurance_cut_bps).ok_or(EscrowError::Overflow)?;
         let token_client = token::Client::new(&env, &asset);
         let contract_addr = env.current_contract_address();
         token_client.transfer(&backer, &contract_addr, &pledge_amount);
@@ -750,21 +775,23 @@ impl CoreEscrow {
             token_client.transfer(&backer, &contract_addr, &insurance_cut);
             Self::_add_insurance(&env, insurance_cut)?;
         }
-        let pool_key = DataKey::EscrowPool(pool_id.clone());
+        let pool_key = EscrowDataKey::EscrowPool(pool_id.clone());
         let mut pool: EscrowPool = env
             .storage()
             .persistent()
             .get(&pool_key)
-            .ok_or(Error::PoolNotFound)?;
+            .ok_or(EscrowError::PoolNotFound)?;
         pool.total_deposited = pool
             .total_deposited
             .checked_add(pledge_amount)
-            .ok_or(Error::Overflow)?;
+            .ok_or(EscrowError::Overflow)?;
         env.storage().persistent().set(&pool_key, &pool);
         FeeCharged {
             pool_id: pool_id.clone(),
             sub_type: SubType::CrowdfundPledge,
-            gross: pledge_amount.checked_add(fee).ok_or(Error::Overflow)?,
+            gross: pledge_amount
+                .checked_add(fee)
+                .ok_or(EscrowError::Overflow)?,
             fee,
             treasury_cut,
             insurance_cut,
@@ -781,13 +808,13 @@ impl CoreEscrow {
         pool_id: BytesN<32>,
         recipient: Address,
         amount: i128,
-    ) -> Result<(), Error> {
+    ) -> Result<(), EscrowError> {
         Self::release_partial(env, pool_id, recipient, amount)
     }
 
     /// Convenience wrapper: refund escrowed net amount to pool owner.
     /// Calls refund_all internally.
-    pub fn route_refund(env: Env, pool_id: BytesN<32>) -> Result<(), Error> {
+    pub fn route_refund(env: Env, pool_id: BytesN<32>) -> Result<(), EscrowError> {
         Self::refund_all(env, pool_id)
     }
 
@@ -795,41 +822,46 @@ impl CoreEscrow {
     // INTERNAL HELPERS
     // ========================================================================
 
-    fn require_admin(env: &Env) -> Result<Address, Error> {
+    fn require_admin(env: &Env) -> Result<Address, EscrowError> {
         env.storage()
             .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)
+            .get(&EscrowDataKey::Admin)
+            .ok_or(EscrowError::NotInitialized)
     }
 
-    fn require_not_paused(env: &Env) -> Result<(), Error> {
+    fn require_not_paused(env: &Env) -> Result<(), EscrowError> {
         let paused: bool = env
             .storage()
             .instance()
-            .get(&DataKey::RoutingPaused)
+            .get(&EscrowDataKey::RoutingPaused)
             .unwrap_or(false);
         if paused {
-            return Err(Error::RoutingPaused);
+            return Err(EscrowError::RoutingPaused);
         }
         Ok(())
     }
 
-    fn _add_insurance(env: &Env, amount: i128) -> Result<(), Error> {
+    fn _add_insurance(env: &Env, amount: i128) -> Result<(), EscrowError> {
         let mut fund = env
             .storage()
             .instance()
-            .get(&DataKey::InsuranceFund)
+            .get(&EscrowDataKey::InsuranceFund)
             .unwrap_or(InsuranceFund {
                 balance: 0,
                 total_contributions: 0,
                 total_paid_out: 0,
             });
-        fund.balance = fund.balance.checked_add(amount).ok_or(Error::Overflow)?;
+        fund.balance = fund
+            .balance
+            .checked_add(amount)
+            .ok_or(EscrowError::Overflow)?;
         fund.total_contributions = fund
             .total_contributions
             .checked_add(amount)
-            .ok_or(Error::Overflow)?;
-        env.storage().instance().set(&DataKey::InsuranceFund, &fund);
+            .ok_or(EscrowError::Overflow)?;
+        env.storage()
+            .instance()
+            .set(&EscrowDataKey::InsuranceFund, &fund);
         Ok(())
     }
 
@@ -839,7 +871,7 @@ impl CoreEscrow {
             .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND);
     }
 
-    fn extend_persistent_ttl(env: &Env, key: &DataKey) {
+    fn extend_persistent_ttl(env: &Env, key: &EscrowDataKey) {
         env.storage()
             .persistent()
             .extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND);

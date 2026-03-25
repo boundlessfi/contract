@@ -26,7 +26,7 @@ pub enum CampaignStatus {
 
 #[contracttype]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum MilestoneStatus {
+pub enum CrowdfundMilestoneStatus {
     Pending,
     Submitted,
     Approved,
@@ -41,7 +41,7 @@ pub struct Milestone {
     pub id: u32,
     pub description: String,
     pub pct: u32, // percentage of total (basis points: 10000 = 100%)
-    pub status: MilestoneStatus,
+    pub status: CrowdfundMilestoneStatus,
 }
 
 #[contracttype]
@@ -65,7 +65,7 @@ pub struct Campaign {
 
 #[contracttype]
 #[derive(Clone)]
-pub enum DataKey {
+pub enum CrowdfundDataKey {
     Admin,
     CoreEscrow,
     ReputationRegistry,

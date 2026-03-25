@@ -1,7 +1,7 @@
 /// End-to-end grant tests across CoreEscrow + GovernanceVoting + ReputationRegistry + GrantHub.
 /// Tests all 3 grant types: Milestone, Retrospective, Quadratic Funding.
 use crate::setup::setup_platform;
-use grant_hub::storage::{GrantStatus, GrantType, MilestoneStatus};
+use grant_hub::storage::{GrantMilestoneStatus, GrantStatus, GrantType};
 use soroban_sdk::testutils::{Address as _, Ledger as _};
 use soroban_sdk::{Address, String, Vec};
 
@@ -34,13 +34,13 @@ fn test_milestone_grant_full_lifecycle() {
     // Verify milestones
     let m0 = p.grant.get_milestone(&gid, &0);
     assert_eq!(m0.pct, 6000);
-    assert_eq!(m0.status, MilestoneStatus::Pending);
+    assert_eq!(m0.status, GrantMilestoneStatus::Pending);
 
     // Submit and approve milestone 0
     p.grant.submit_grant_milestone(&recipient, &gid, &0);
     assert_eq!(
         p.grant.get_milestone(&gid, &0).status,
-        MilestoneStatus::Submitted
+        GrantMilestoneStatus::Submitted
     );
 
     p.grant.approve_grant_milestone(&gid, &0);

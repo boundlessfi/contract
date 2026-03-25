@@ -20,7 +20,7 @@ pub enum GrantStatus {
 
 #[contracttype]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MilestoneStatus {
+pub enum GrantMilestoneStatus {
     Pending,
     Submitted,
     Approved,
@@ -49,7 +49,7 @@ pub struct GrantMilestone {
     pub id: u32,
     pub description: String,
     pub pct: u32, // basis points, all milestones sum to 10000
-    pub status: MilestoneStatus,
+    pub status: GrantMilestoneStatus,
 }
 
 #[contracttype]
@@ -83,7 +83,7 @@ pub struct VoteOption {
 
 #[contracttype]
 #[derive(Clone)]
-pub enum DataKey {
+pub enum GrantDataKey {
     Admin,
     CoreEscrow,
     ReputationRegistry,

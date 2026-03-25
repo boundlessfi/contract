@@ -4,9 +4,9 @@ use boundless_types::ttl::{
     INSTANCE_TTL_EXTEND, INSTANCE_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND, PERSISTENT_TTL_THRESHOLD,
 };
 
-use crate::error::Error;
+use crate::error::ProjectError;
 use crate::events::{ProjectRegistered, ProjectSuspended, VerificationUpgraded, WarningIssued};
-use crate::storage::{DataKey, Project};
+use crate::storage::{Project, ProjectDataKey};
 
 /// Deposit rate in basis points by verification level.
 /// Level 0: 10%, Level 1: 5%, Level 2+: 0%
@@ -27,13 +27,15 @@ impl ProjectRegistry {
     // INITIALIZATION
     // ========================================
 
-    pub fn init(env: Env, admin: Address) -> Result<(), Error> {
-        if env.storage().instance().has(&DataKey::Admin) {
-            return Err(Error::AlreadyInitialized);
+    pub fn init(env: Env, admin: Address) -> Result<(), ProjectError> {
+        if env.storage().instance().has(&ProjectDataKey::Admin) {
+            return Err(ProjectError::AlreadyInitialized);
         }
         admin.require_auth();
-        env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage().instance().set(&DataKey::ProjectCount, &0u64);
+        env.storage().instance().set(&ProjectDataKey::Admin, &admin);
+        env.storage()
+            .instance()
+            .set(&ProjectDataKey::ProjectCount, &0u64);
         Self::extend_instance_ttl(&env);
         Ok(())
     }
@@ -42,29 +44,29 @@ impl ProjectRegistry {
     // ADMIN: MODULE AUTHORIZATION
     // ========================================
 
-    pub fn add_authorized_module(env: Env, module: Address) -> Result<(), Error> {
+    pub fn add_authorized_module(env: Env, module: Address) -> Result<(), ProjectError> {
         let admin: Address = env
             .storage()
             .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
+            .get(&ProjectDataKey::Admin)
+            .ok_or(ProjectError::NotInitialized)?;
         admin.require_auth();
         env.storage()
             .instance()
-            .set(&DataKey::AuthorizedModule(module), &true);
+            .set(&ProjectDataKey::AuthorizedModule(module), &true);
         Ok(())
     }
 
-    pub fn remove_authorized_module(env: Env, module: Address) -> Result<(), Error> {
+    pub fn remove_authorized_module(env: Env, module: Address) -> Result<(), ProjectError> {
         let admin: Address = env
             .storage()
             .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
+            .get(&ProjectDataKey::Admin)
+            .ok_or(ProjectError::NotInitialized)?;
         admin.require_auth();
         env.storage()
             .instance()
-            .remove(&DataKey::AuthorizedModule(module));
+            .remove(&ProjectDataKey::AuthorizedModule(module));
         Ok(())
     }
 
@@ -72,20 +74,26 @@ impl ProjectRegistry {
     // PROJECT REGISTRATION
     // ========================================
 
-    pub fn register_project(env: Env, owner: Address, metadata_cid: String) -> Result<u64, Error> {
+    pub fn register_project(
+        env: Env,
+        owner: Address,
+        metadata_cid: String,
+    ) -> Result<u64, ProjectError> {
         owner.require_auth();
 
-        if !env.storage().instance().has(&DataKey::Admin) {
-            return Err(Error::NotInitialized);
+        if !env.storage().instance().has(&ProjectDataKey::Admin) {
+            return Err(ProjectError::NotInitialized);
         }
 
         let mut count: u64 = env
             .storage()
             .instance()
-            .get(&DataKey::ProjectCount)
+            .get(&ProjectDataKey::ProjectCount)
             .unwrap_or(0);
         count += 1;
-        env.storage().instance().set(&DataKey::ProjectCount, &count);
+        env.storage()
+            .instance()
+            .set(&ProjectDataKey::ProjectCount, &count);
 
         let project = Project {
             id: count,
@@ -107,7 +115,7 @@ impl ProjectRegistry {
             total_platform_spend: 0,
         };
 
-        let key = DataKey::Project(count);
+        let key = ProjectDataKey::Project(count);
         env.storage().persistent().set(&key, &project);
         Self::extend_persistent_ttl(&env, &key);
         Self::extend_instance_ttl(&env);
@@ -121,24 +129,28 @@ impl ProjectRegistry {
     // VERIFICATION
     // ========================================
 
-    pub fn upgrade_verification(env: Env, project_id: u64, new_level: u32) -> Result<(), Error> {
+    pub fn upgrade_verification(
+        env: Env,
+        project_id: u64,
+        new_level: u32,
+    ) -> Result<(), ProjectError> {
         let admin: Address = env
             .storage()
             .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
+            .get(&ProjectDataKey::Admin)
+            .ok_or(ProjectError::NotInitialized)?;
         admin.require_auth();
 
         if new_level > 2 {
-            return Err(Error::NotAuthorized);
+            return Err(ProjectError::NotAuthorized);
         }
 
-        let key = DataKey::Project(project_id);
+        let key = ProjectDataKey::Project(project_id);
         let mut project: Project = env
             .storage()
             .persistent()
             .get(&key)
-            .ok_or(Error::ProjectNotFound)?;
+            .ok_or(ProjectError::ProjectNotFound)?;
 
         project.verification_level = new_level;
         env.storage().persistent().set(&key, &project);
@@ -156,12 +168,12 @@ impl ProjectRegistry {
     // BUDGET VALIDATION
     // ========================================
 
-    pub fn validate_budget(env: Env, project_id: u64, budget: i128) -> Result<bool, Error> {
+    pub fn validate_budget(env: Env, project_id: u64, budget: i128) -> Result<bool, ProjectError> {
         let project: Project = env
             .storage()
             .persistent()
-            .get(&DataKey::Project(project_id))
-            .ok_or(Error::ProjectNotFound)?;
+            .get(&ProjectDataKey::Project(project_id))
+            .ok_or(ProjectError::ProjectNotFound)?;
 
         let max_budget: i128 = match project.verification_level {
             0 => 2000,
@@ -185,19 +197,19 @@ impl ProjectRegistry {
         module: Address,
         project_id: u64,
         budget: i128,
-    ) -> Result<(), Error> {
+    ) -> Result<(), ProjectError> {
         Self::require_authorized_module(&env, &module)?;
         module.require_auth();
 
-        let key = DataKey::Project(project_id);
+        let key = ProjectDataKey::Project(project_id);
         let mut project: Project = env
             .storage()
             .persistent()
             .get(&key)
-            .ok_or(Error::ProjectNotFound)?;
+            .ok_or(ProjectError::ProjectNotFound)?;
 
         if project.suspended {
-            return Err(Error::ProjectSuspended);
+            return Err(ProjectError::ProjectSuspended);
         }
 
         project.bounties_posted += 1;
@@ -213,16 +225,16 @@ impl ProjectRegistry {
         module: Address,
         project_id: u64,
         amount: i128,
-    ) -> Result<(), Error> {
+    ) -> Result<(), ProjectError> {
         Self::require_authorized_module(&env, &module)?;
         module.require_auth();
 
-        let key = DataKey::Project(project_id);
+        let key = ProjectDataKey::Project(project_id);
         let mut project: Project = env
             .storage()
             .persistent()
             .get(&key)
-            .ok_or(Error::ProjectNotFound)?;
+            .ok_or(ProjectError::ProjectNotFound)?;
 
         project.total_paid_out += amount;
         if project.active_bounty_budget >= amount {
@@ -235,16 +247,16 @@ impl ProjectRegistry {
         Ok(())
     }
 
-    pub fn record_dispute(env: Env, module: Address, project_id: u64) -> Result<(), Error> {
+    pub fn record_dispute(env: Env, module: Address, project_id: u64) -> Result<(), ProjectError> {
         Self::require_authorized_module(&env, &module)?;
         module.require_auth();
 
-        let key = DataKey::Project(project_id);
+        let key = ProjectDataKey::Project(project_id);
         let mut project: Project = env
             .storage()
             .persistent()
             .get(&key)
-            .ok_or(Error::ProjectNotFound)?;
+            .ok_or(ProjectError::ProjectNotFound)?;
 
         project.dispute_count += 1;
 
@@ -270,16 +282,16 @@ impl ProjectRegistry {
         env: Env,
         module: Address,
         project_id: u64,
-    ) -> Result<(), Error> {
+    ) -> Result<(), ProjectError> {
         Self::require_authorized_module(&env, &module)?;
         module.require_auth();
 
-        let key = DataKey::Project(project_id);
+        let key = ProjectDataKey::Project(project_id);
         let mut project: Project = env
             .storage()
             .persistent()
             .get(&key)
-            .ok_or(Error::ProjectNotFound)?;
+            .ok_or(ProjectError::ProjectNotFound)?;
 
         project.missed_milestones += 1;
 
@@ -305,20 +317,20 @@ impl ProjectRegistry {
     // ADMIN: SUSPENSION
     // ========================================
 
-    pub fn suspend_project(env: Env, project_id: u64) -> Result<(), Error> {
+    pub fn suspend_project(env: Env, project_id: u64) -> Result<(), ProjectError> {
         let admin: Address = env
             .storage()
             .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
+            .get(&ProjectDataKey::Admin)
+            .ok_or(ProjectError::NotInitialized)?;
         admin.require_auth();
 
-        let key = DataKey::Project(project_id);
+        let key = ProjectDataKey::Project(project_id);
         let mut project: Project = env
             .storage()
             .persistent()
             .get(&key)
-            .ok_or(Error::ProjectNotFound)?;
+            .ok_or(ProjectError::ProjectNotFound)?;
 
         project.suspended = true;
         env.storage().persistent().set(&key, &project);
@@ -327,20 +339,20 @@ impl ProjectRegistry {
         Ok(())
     }
 
-    pub fn unsuspend_project(env: Env, project_id: u64) -> Result<(), Error> {
+    pub fn unsuspend_project(env: Env, project_id: u64) -> Result<(), ProjectError> {
         let admin: Address = env
             .storage()
             .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
+            .get(&ProjectDataKey::Admin)
+            .ok_or(ProjectError::NotInitialized)?;
         admin.require_auth();
 
-        let key = DataKey::Project(project_id);
+        let key = ProjectDataKey::Project(project_id);
         let mut project: Project = env
             .storage()
             .persistent()
             .get(&key)
-            .ok_or(Error::ProjectNotFound)?;
+            .ok_or(ProjectError::ProjectNotFound)?;
 
         project.suspended = false;
         env.storage().persistent().set(&key, &project);
@@ -353,17 +365,24 @@ impl ProjectRegistry {
     // ========================================
 
     /// Calculate the deposit required for a given budget based on project verification level.
-    pub fn calculate_deposit(env: Env, project_id: u64, budget: i128) -> Result<i128, Error> {
+    pub fn calculate_deposit(
+        env: Env,
+        project_id: u64,
+        budget: i128,
+    ) -> Result<i128, ProjectError> {
         let project: Project = env
             .storage()
             .persistent()
-            .get(&DataKey::Project(project_id))
-            .ok_or(Error::ProjectNotFound)?;
+            .get(&ProjectDataKey::Project(project_id))
+            .ok_or(ProjectError::ProjectNotFound)?;
         let rate = deposit_rate_bps(project.verification_level);
         if rate == 0 {
             return Ok(0);
         }
-        Ok(budget.checked_mul(rate as i128).ok_or(Error::Overflow)? / 10_000)
+        Ok(budget
+            .checked_mul(rate as i128)
+            .ok_or(ProjectError::Overflow)?
+            / 10_000)
     }
 
     /// Lock a deposit for a project. Called by the project owner before posting a bounty/campaign.
@@ -372,17 +391,17 @@ impl ProjectRegistry {
         project_id: u64,
         amount: i128,
         asset: Address,
-    ) -> Result<(), Error> {
+    ) -> Result<(), ProjectError> {
         if amount <= 0 {
-            return Err(Error::InvalidAmount);
+            return Err(ProjectError::InvalidAmount);
         }
 
-        let key = DataKey::Project(project_id);
+        let key = ProjectDataKey::Project(project_id);
         let mut project: Project = env
             .storage()
             .persistent()
             .get(&key)
-            .ok_or(Error::ProjectNotFound)?;
+            .ok_or(ProjectError::ProjectNotFound)?;
 
         project.owner.require_auth();
 
@@ -405,19 +424,19 @@ impl ProjectRegistry {
         project_id: u64,
         amount: i128,
         asset: Address,
-    ) -> Result<(), Error> {
+    ) -> Result<(), ProjectError> {
         Self::require_authorized_module(&env, &module)?;
         module.require_auth();
 
-        let key = DataKey::Project(project_id);
+        let key = ProjectDataKey::Project(project_id);
         let mut project: Project = env
             .storage()
             .persistent()
             .get(&key)
-            .ok_or(Error::ProjectNotFound)?;
+            .ok_or(ProjectError::ProjectNotFound)?;
 
         if project.deposit_held < amount {
-            return Err(Error::NoDepositHeld);
+            return Err(ProjectError::NoDepositHeld);
         }
 
         project.deposit_held -= amount;
@@ -438,23 +457,23 @@ impl ProjectRegistry {
         amount: i128,
         asset: Address,
         treasury: Address,
-    ) -> Result<(), Error> {
+    ) -> Result<(), ProjectError> {
         let admin: Address = env
             .storage()
             .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
+            .get(&ProjectDataKey::Admin)
+            .ok_or(ProjectError::NotInitialized)?;
         admin.require_auth();
 
-        let key = DataKey::Project(project_id);
+        let key = ProjectDataKey::Project(project_id);
         let mut project: Project = env
             .storage()
             .persistent()
             .get(&key)
-            .ok_or(Error::ProjectNotFound)?;
+            .ok_or(ProjectError::ProjectNotFound)?;
 
         if project.deposit_held < amount {
-            return Err(Error::NoDepositHeld);
+            return Err(ProjectError::NoDepositHeld);
         }
 
         project.deposit_held -= amount;
@@ -477,24 +496,24 @@ impl ProjectRegistry {
     // QUERIES
     // ========================================
 
-    pub fn get_project(env: Env, project_id: u64) -> Result<Project, Error> {
-        let key = DataKey::Project(project_id);
+    pub fn get_project(env: Env, project_id: u64) -> Result<Project, ProjectError> {
+        let key = ProjectDataKey::Project(project_id);
         let project = env
             .storage()
             .persistent()
             .get(&key)
-            .ok_or(Error::ProjectNotFound)?;
+            .ok_or(ProjectError::ProjectNotFound)?;
         Self::extend_persistent_ttl(&env, &key);
         Self::extend_instance_ttl(&env);
         Ok(project)
     }
 
-    pub fn is_suspended(env: Env, project_id: u64) -> Result<bool, Error> {
+    pub fn is_suspended(env: Env, project_id: u64) -> Result<bool, ProjectError> {
         let project: Project = env
             .storage()
             .persistent()
-            .get(&DataKey::Project(project_id))
-            .ok_or(Error::ProjectNotFound)?;
+            .get(&ProjectDataKey::Project(project_id))
+            .ok_or(ProjectError::ProjectNotFound)?;
         Ok(project.suspended)
     }
 
@@ -502,12 +521,12 @@ impl ProjectRegistry {
     // UPGRADE
     // ========================================
 
-    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), ProjectError> {
         let admin: Address = env
             .storage()
             .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)?;
+            .get(&ProjectDataKey::Admin)
+            .ok_or(ProjectError::NotInitialized)?;
         admin.require_auth();
         env.deployer().update_current_contract_wasm(new_wasm_hash);
         Self::extend_instance_ttl(&env);
@@ -524,19 +543,19 @@ impl ProjectRegistry {
             .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND);
     }
 
-    fn extend_persistent_ttl(env: &Env, key: &DataKey) {
+    fn extend_persistent_ttl(env: &Env, key: &ProjectDataKey) {
         env.storage()
             .persistent()
             .extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND);
     }
 
-    fn require_authorized_module(env: &Env, caller: &Address) -> Result<(), Error> {
+    fn require_authorized_module(env: &Env, caller: &Address) -> Result<(), ProjectError> {
         if !env
             .storage()
             .instance()
-            .has(&DataKey::AuthorizedModule(caller.clone()))
+            .has(&ProjectDataKey::AuthorizedModule(caller.clone()))
         {
-            return Err(Error::ModuleNotAuthorized);
+            return Err(ProjectError::ModuleNotAuthorized);
         }
         Ok(())
     }

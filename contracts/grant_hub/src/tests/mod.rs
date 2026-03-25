@@ -1,5 +1,5 @@
 use crate::contract::{GrantHub, GrantHubClient};
-use crate::storage::{GrantStatus, GrantType, MilestoneStatus};
+use crate::storage::{GrantMilestoneStatus, GrantStatus, GrantType};
 use core_escrow::{CoreEscrow, CoreEscrowClient};
 use governance_voting::{GovernanceVoting, GovernanceVotingClient};
 use reputation_registry::{ReputationRegistry, ReputationRegistryClient};
@@ -115,18 +115,18 @@ fn test_milestone_grant_lifecycle() {
     // Check milestones stored correctly
     let m0 = t.hub_client.get_milestone(&grant_id, &0);
     assert_eq!(m0.pct, 6000);
-    assert_eq!(m0.status, MilestoneStatus::Pending);
+    assert_eq!(m0.status, GrantMilestoneStatus::Pending);
 
     let m1 = t.hub_client.get_milestone(&grant_id, &1);
     assert_eq!(m1.pct, 4000);
-    assert_eq!(m1.status, MilestoneStatus::Pending);
+    assert_eq!(m1.status, GrantMilestoneStatus::Pending);
 
     // Submit first milestone
     t.hub_client
         .submit_grant_milestone(&recipient, &grant_id, &0);
 
     let m0_after = t.hub_client.get_milestone(&grant_id, &0);
-    assert_eq!(m0_after.status, MilestoneStatus::Submitted);
+    assert_eq!(m0_after.status, GrantMilestoneStatus::Submitted);
 
     // Approve first milestone
     t.hub_client.approve_grant_milestone(&grant_id, &0);

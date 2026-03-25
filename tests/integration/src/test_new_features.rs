@@ -9,7 +9,7 @@
 use crate::setup::{setup_platform, Platform};
 use boundless_types::ActivityCategory;
 use bounty_registry::storage::{BountyStatus, BountyType};
-use crowdfund_registry::storage::{CampaignStatus, MilestoneStatus};
+use crowdfund_registry::storage::{CampaignStatus, CrowdfundMilestoneStatus};
 use grant_hub::storage::GrantStatus;
 use hackathon_registry::storage::HackathonStatus;
 use soroban_sdk::testutils::{Address as _, Ledger};
@@ -248,14 +248,14 @@ fn test_dispute_milestone() {
     p.crowdfund.submit_milestone(&cid, &0);
     assert_eq!(
         p.crowdfund.get_milestone(&cid, &0).status,
-        MilestoneStatus::Submitted
+        CrowdfundMilestoneStatus::Submitted
     );
 
     // Backer disputes
     p.crowdfund.dispute_milestone(&backer, &cid, &0);
     assert_eq!(
         p.crowdfund.get_milestone(&cid, &0).status,
-        MilestoneStatus::Disputed
+        CrowdfundMilestoneStatus::Disputed
     );
 }
 

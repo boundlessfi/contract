@@ -24,7 +24,7 @@ pub struct Project {
 
 #[contracttype]
 #[derive(Clone)]
-pub enum DataKey {
+pub enum ProjectDataKey {
     Admin,
     Version,
     ProjectCount,

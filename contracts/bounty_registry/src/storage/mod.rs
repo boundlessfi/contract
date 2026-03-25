@@ -58,7 +58,7 @@ pub struct Application {
 }
 
 #[contracttype]
-pub enum DataKey {
+pub enum BountyDataKey {
     Admin,
     CoreEscrow,
     ReputationRegistry,
