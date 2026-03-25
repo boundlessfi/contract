@@ -73,7 +73,6 @@ impl ReputationRegistry {
         env.storage().persistent().set(&key, &profile);
         Self::extend_persistent_ttl(&env, &key);
 
-        // Initialize credits
         let credit_key = ReputationDataKey::CreditData(contributor);
         let credits = CreditData::new(now);
         env.storage().persistent().set(&credit_key, &credits);
@@ -137,7 +136,6 @@ impl ReputationRegistry {
         Ok(profile.level >= min_level)
     }
 
-    /// Check requirements including optional category skill rating.
     pub fn meets_skill_requirements(
         env: Env,
         contributor: Address,
