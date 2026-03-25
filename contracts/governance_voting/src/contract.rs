@@ -71,7 +71,7 @@ impl GovernanceVoting {
         module: Address,
         context: VoteContext,
         module_id: u64,
-        options: Vec<String>,
+        vote_options: Vec<String>,
         start_at: u64,
         end_at: u64,
         threshold: Option<u32>,
@@ -101,9 +101,9 @@ impl GovernanceVoting {
         }
         let session_id: BytesN<32> = env.crypto().sha256(&payload).into();
 
-        let option_count = options.len();
+        let option_count = vote_options.len();
         for i in 0..option_count {
-            let label = options.get(i).ok_or(GovernanceError::InvalidOption)?;
+            let label = vote_options.get(i).ok_or(GovernanceError::InvalidOption)?;
             let opt = VoteOption {
                 id: i,
                 label,

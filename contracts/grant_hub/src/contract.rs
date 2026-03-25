@@ -359,7 +359,7 @@ impl GrantHub {
         creator: Address,
         amount: i128,
         asset: Address,
-        options: Vec<String>,
+        vote_options: Vec<String>,
         voting_duration: u64,
     ) -> Result<u64, GrantError> {
         creator.require_auth();
@@ -398,7 +398,7 @@ impl GrantHub {
                 env.current_contract_address().into_val(&env),
                 VoteContext::RetrospectiveGrant.into_val(&env),
                 count.into_val(&env),
-                options.into_val(&env),
+                vote_options.into_val(&env),
                 now.into_val(&env),
                 (now + voting_duration).into_val(&env),
                 None::<u32>.into_val(&env),
