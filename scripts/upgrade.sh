@@ -8,32 +8,29 @@
 #
 # Prerequisites:
 #   - stellar CLI installed
-#   - ADMIN_SECRET env var set
-#   - NETWORK env var set (testnet | mainnet)
-#   - Contract ID env vars set (CORE_ESCROW_ID, BOUNTY_REGISTRY_ID, etc.)
+#   - .env file with ADMIN_SECRET and contract IDs (or set them as env vars)
 #   - WASM files built via `stellar contract build`
 
 set -euo pipefail
 
-WASM_DIR="${WASM_DIR:-target/wasm32v1-none/release}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# Source .env if present
+if [[ -f "$PROJECT_ROOT/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$PROJECT_ROOT/.env"
+  set +a
+fi
+
+WASM_DIR="${WASM_DIR:-$PROJECT_ROOT/target/wasm32v1-none/release}"
 NETWORK="${NETWORK:-testnet}"
 
 if [[ -z "${ADMIN_SECRET:-}" ]]; then
-  echo "ERROR: ADMIN_SECRET environment variable required"
+  >&2 echo "ERROR: ADMIN_SECRET not set (add to .env or export it)"
   exit 1
 fi
-
-# ── Contract name → env var mapping ──────────────────────
-declare -A CONTRACT_IDS=(
-  [core_escrow]="${CORE_ESCROW_ID:-}"
-  [reputation_registry]="${REPUTATION_REGISTRY_ID:-}"
-  [governance_voting]="${GOVERNANCE_VOTING_ID:-}"
-  [project_registry]="${PROJECT_REGISTRY_ID:-}"
-  [bounty_registry]="${BOUNTY_REGISTRY_ID:-}"
-  [crowdfund_registry]="${CROWDFUND_REGISTRY_ID:-}"
-  [grant_hub]="${GRANT_HUB_ID:-}"
-  [hackathon_registry]="${HACKATHON_REGISTRY_ID:-}"
-)
 
 # Upgrade order: infrastructure first, then modules
 UPGRADE_ORDER=(
@@ -49,9 +46,25 @@ UPGRADE_ORDER=(
 
 # ── Helpers ──────────────────────────────────────────────
 
+# Map contract name → contract ID env var value
+get_contract_id() {
+  local name="$1"
+  case "$name" in
+    core_escrow)          echo "${CORE_ESCROW_ID:-}" ;;
+    reputation_registry)  echo "${REPUTATION_REGISTRY_ID:-}" ;;
+    governance_voting)    echo "${GOVERNANCE_VOTING_ID:-}" ;;
+    project_registry)     echo "${PROJECT_REGISTRY_ID:-}" ;;
+    bounty_registry)      echo "${BOUNTY_REGISTRY_ID:-}" ;;
+    crowdfund_registry)   echo "${CROWDFUND_REGISTRY_ID:-}" ;;
+    grant_hub)            echo "${GRANT_HUB_ID:-}" ;;
+    hackathon_registry)   echo "${HACKATHON_REGISTRY_ID:-}" ;;
+    *) return 1 ;;
+  esac
+}
+
 install_wasm() {
   local wasm="$1"
-  echo "  Installing WASM on-chain..."
+  >&2 echo "  Installing WASM on-chain..."
   stellar contract install \
     --wasm "$wasm" \
     --source "$ADMIN_SECRET" \
@@ -60,33 +73,34 @@ install_wasm() {
 
 upgrade_contract() {
   local name="$1"
-  local contract_id="${CONTRACT_IDS[$name]:-}"
+  local contract_id
+  contract_id="$(get_contract_id "$name")"
   local wasm="$WASM_DIR/${name}.wasm"
 
   if [[ -z "$contract_id" ]]; then
-    echo "SKIP: $name — no contract ID set (${name^^}_ID)"
+    >&2 echo "SKIP: $name — no contract ID set"
     return 1
   fi
 
   if [[ ! -f "$wasm" ]]; then
-    echo "ERROR: WASM not found: $wasm"
+    >&2 echo "ERROR: WASM not found: $wasm"
     return 1
   fi
 
-  echo ""
-  echo "────────────────────────────────────────"
-  echo "Upgrading: $name"
-  echo "  Contract: $contract_id"
-  echo "  WASM:     $wasm"
-  echo "────────────────────────────────────────"
+  >&2 echo ""
+  >&2 echo "────────────────────────────────────────"
+  >&2 echo "Upgrading: $name"
+  >&2 echo "  Contract: $contract_id"
+  >&2 echo "  WASM:     $wasm"
+  >&2 echo "────────────────────────────────────────"
 
   # Install the new WASM and get the hash
   local wasm_hash
   wasm_hash=$(install_wasm "$wasm")
-  echo "  WASM hash: $wasm_hash"
+  >&2 echo "  WASM hash: $wasm_hash"
 
   # Call the contract's upgrade function
-  echo "  Calling upgrade..."
+  >&2 echo "  Calling upgrade..."
   stellar contract invoke \
     --id "$contract_id" \
     --source "$ADMIN_SECRET" \
@@ -94,7 +108,7 @@ upgrade_contract() {
     -- upgrade \
     --new_wasm_hash "$wasm_hash"
 
-  echo "  Done: $name upgraded successfully"
+  >&2 echo "  Done: $name upgraded successfully"
 }
 
 # ── Main ─────────────────────────────────────────────────
@@ -102,9 +116,9 @@ upgrade_contract() {
 TARGETS=("$@")
 
 if [[ ${#TARGETS[@]} -eq 0 ]]; then
-  echo "Usage: $0 <all | contract_name [contract_name ...]>"
-  echo ""
-  echo "Contracts: ${UPGRADE_ORDER[*]}"
+  >&2 echo "Usage: $0 <all | contract_name [contract_name ...]>"
+  >&2 echo ""
+  >&2 echo "Contracts: ${UPGRADE_ORDER[*]}"
   exit 1
 fi
 
@@ -113,20 +127,19 @@ if [[ "${TARGETS[0]}" == "all" ]]; then
   TARGETS=("${UPGRADE_ORDER[@]}")
 fi
 
-echo "=== Boundless Platform — Contract Upgrade ==="
-echo "Network:   $NETWORK"
-echo "Targets:   ${TARGETS[*]}"
-echo ""
+>&2 echo "=== Boundless Platform — Contract Upgrade ==="
+>&2 echo "Network:   $NETWORK"
+>&2 echo "Targets:   ${TARGETS[*]}"
+>&2 echo ""
 
 SUCCEEDED=0
 FAILED=0
-SKIPPED=0
 
 for name in "${TARGETS[@]}"; do
   # Validate contract name
-  if [[ -z "${CONTRACT_IDS[$name]+exists}" ]]; then
-    echo "ERROR: Unknown contract '$name'"
-    echo "Valid contracts: ${!CONTRACT_IDS[*]}"
+  if ! get_contract_id "$name" > /dev/null 2>&1; then
+    >&2 echo "ERROR: Unknown contract '$name'"
+    >&2 echo "Valid contracts: ${UPGRADE_ORDER[*]}"
     exit 1
   fi
 
@@ -137,11 +150,11 @@ for name in "${TARGETS[@]}"; do
   fi
 done
 
-echo ""
-echo "=== Upgrade Summary ==="
-echo "  Succeeded: $SUCCEEDED"
-echo "  Failed:    $FAILED"
-echo ""
+>&2 echo ""
+>&2 echo "=== Upgrade Summary ==="
+>&2 echo "  Succeeded: $SUCCEEDED"
+>&2 echo "  Failed:    $FAILED"
+>&2 echo ""
 
 if [[ $FAILED -gt 0 ]]; then
   exit 1

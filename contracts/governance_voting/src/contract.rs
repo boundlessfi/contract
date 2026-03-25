@@ -468,6 +468,22 @@ impl GovernanceVoting {
     }
 
     // ========================================================================
+    // ADMIN
+    // ========================================================================
+
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), GovernanceError> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&GovernanceDataKey::Admin)
+            .ok_or(GovernanceError::NotInitialized)?;
+        admin.require_auth();
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+        Self::extend_instance_ttl(&env);
+        Ok(())
+    }
+
+    // ========================================================================
     // INTERNAL HELPERS
     // ========================================================================
 
