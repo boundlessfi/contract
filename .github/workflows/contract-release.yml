@@ -1,0 +1,112 @@
+name: Build and Release Crowdfund Contract
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      release_name:
+        description: "Release Version (e.g. v0.0.0)"
+        required: true
+        type: string
+
+permissions:
+  id-token: write
+  contents: write
+  attestations: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: |
+          rustup update
+          rustup target add wasm32v1-none
+
+      - name: Set up env vars
+        run: |
+          echo "WASM_DIR=target/wasm32v1-none/release" >> $GITHUB_ENV
+          if [ -n "${{ github.event.inputs.release_name }}" ]; then
+            echo "TAG_NAME=${{ github.event.inputs.release_name }}" >> $GITHUB_ENV
+          else
+            echo "TAG_NAME=${{ github.ref_name }}" >> $GITHUB_ENV
+          fi
+
+      - name: Set up Stellar CLI
+        uses: stellar/stellar-cli@v22.8.1
+        with:
+          version: 22.8.1
+
+      - name: Build all contracts
+        run: |
+          stellar contract build \
+            --meta home_domain=boundless.fi \
+            --meta source_repo=github:${{ github.repository }}
+          
+          # Optimize all generated wasms
+          for wasm in ${{ env.WASM_DIR }}/*.wasm; do
+            # Skip already optimized ones if any
+            if [[ "$wasm" == *".optimized.wasm" ]]; then continue; fi
+            
+            echo "Optimizing $wasm..."
+            stellar contract optimize --wasm "$wasm"
+            
+            # Replace original with optimized
+            optimized="${wasm%.wasm}.optimized.wasm"
+            if [ -f "$optimized" ]; then
+              mv "$optimized" "$wasm"
+            fi
+          done
+
+      - name: Upload to Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: boundless-contracts
+          path: ${{ env.WASM_DIR }}/*.wasm
+
+      - name: Build Attestations
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: "${{ env.WASM_DIR }}/*.wasm"
+
+      - name: Make a new Release
+        id: release
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const response = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: '${{ env.TAG_NAME }}',
+              target_commitish: '${{ github.sha }}',
+              make_latest: 'true',
+              name: '${{ env.TAG_NAME }}'
+            });
+            const { data } = response;
+            core.setOutput('release_id', data.id);
+
+      - name: Upload to Release
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const wasmDir = '${{ env.WASM_DIR }}';
+            const files = fs.readdirSync(wasmDir).filter(f => f.endsWith('.wasm'));
+            
+            for (const file of files) {
+              console.log(`Uploading ${file}...`);
+              await github.rest.repos.uploadReleaseAsset({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                release_id: '${{ steps.release.outputs.release_id }}',
+                name: file,
+                data: fs.readFileSync(path.join(wasmDir, file)),
+              });
+            }
