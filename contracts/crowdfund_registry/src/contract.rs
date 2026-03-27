@@ -129,6 +129,7 @@ impl CrowdfundRegistry {
         deadline: u64,
         milestone_descs: Vec<(String, u32)>,
         min_pledge: i128,
+        submit: bool,
     ) -> Result<u64, CrowdfundError> {
         owner.require_auth();
 
@@ -140,18 +141,7 @@ impl CrowdfundRegistry {
         }
 
         // Validate milestones: count 2-10, sum of pcts = 10000
-        let ms_count = milestone_descs.len();
-        if !(2..=10).contains(&ms_count) {
-            return Err(CrowdfundError::InvalidMilestones);
-        }
-        let mut pct_sum: u32 = 0;
-        for i in 0..ms_count {
-            let (_, pct) = milestone_descs.get(i).unwrap();
-            pct_sum += pct;
-        }
-        if pct_sum != 10000 {
-            return Err(CrowdfundError::InvalidMilestones);
-        }
+        Self::validate_milestones(&milestone_descs)?;
 
         let mut count: u64 = env
             .storage()
@@ -181,30 +171,24 @@ impl CrowdfundRegistry {
             env.invoke_contract(&escrow_addr, &sym(&env, "create_pool"), pool_args);
 
         // Store milestones decomposed
-        for i in 0..ms_count {
-            let (desc, pct) = milestone_descs.get(i).unwrap();
-            let milestone = Milestone {
-                id: i,
-                description: desc,
-                pct,
-                status: CrowdfundMilestoneStatus::Pending,
-            };
-            env.storage()
-                .persistent()
-                .set(&CrowdfundDataKey::CampaignMilestone(count, i), &milestone);
+        Self::set_milestones(&env, count, &milestone_descs);
+
+        let mut status = CampaignStatus::Draft;
+        if submit {
+            status = CampaignStatus::Submitted;
         }
 
         let campaign = Campaign {
             id: count,
             owner: owner.clone(),
             metadata_cid,
-            status: CampaignStatus::Draft,
+            status,
             funding_goal,
             current_funding: 0,
             asset,
             pool_id,
             deadline,
-            milestone_count: ms_count,
+            milestone_count: milestone_descs.len(),
             min_pledge,
             backer_count: 0,
             refund_progress: 0,
@@ -223,7 +207,63 @@ impl CrowdfundRegistry {
         }
         .publish(&env);
 
+        if submit {
+            CampaignSubmittedForReview { id: count }.publish(&env);
+        }
+
         Ok(count)
+    }
+
+    pub fn update_campaign(
+        env: Env,
+        campaign_id: u64,
+        metadata_cid: String,
+        funding_goal: i128,
+        asset: Address,
+        deadline: u64,
+        milestone_descs: Vec<(String, u32)>,
+        min_pledge: i128,
+    ) -> Result<(), CrowdfundError> {
+        let key = CrowdfundDataKey::Campaign(campaign_id);
+        let mut campaign: Campaign = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(CrowdfundError::CampaignNotFound)?;
+
+        campaign.owner.require_auth();
+
+        if campaign.status != CampaignStatus::Draft {
+            return Err(CrowdfundError::NotDraft);
+        }
+
+        if funding_goal <= 0 {
+            return Err(CrowdfundError::AmountNotPositive);
+        }
+        if deadline <= env.ledger().timestamp() {
+            return Err(CrowdfundError::DeadlinePassed);
+        }
+
+        Self::validate_milestones(&milestone_descs)?;
+        Self::set_milestones(&env, campaign_id, &milestone_descs);
+
+        campaign.metadata_cid = metadata_cid;
+        campaign.funding_goal = funding_goal;
+        campaign.asset = asset;
+        campaign.deadline = deadline;
+        campaign.milestone_count = milestone_descs.len();
+        campaign.min_pledge = min_pledge;
+
+        env.storage().persistent().set(&key, &campaign);
+        Self::extend_persistent_ttl(&env, &key);
+
+        crate::events::CampaignUpdated {
+            id: campaign_id,
+            funding_goal,
+        }
+        .publish(&env);
+
+        Ok(())
     }
 
     // ========================================================================
@@ -309,7 +349,11 @@ impl CrowdfundRegistry {
         Ok(session_id)
     }
 
-    pub fn reject_campaign(env: Env, campaign_id: u64) -> Result<(), CrowdfundError> {
+    pub fn reject_campaign(
+        env: Env,
+        campaign_id: u64,
+        reason: String,
+    ) -> Result<(), CrowdfundError> {
         let admin = Self::require_admin(&env)?;
         admin.require_auth();
 
@@ -328,7 +372,7 @@ impl CrowdfundRegistry {
         campaign.vote_session_id = None;
         env.storage().persistent().set(&key, &campaign);
 
-        CampaignRejected { id: campaign_id }.publish(&env);
+        CampaignRejected { id: campaign_id, reason }.publish(&env);
         Ok(())
     }
 
@@ -984,5 +1028,39 @@ impl CrowdfundRegistry {
             .instance()
             .get(&CrowdfundDataKey::GovernanceVoting)
             .expect("not initialized")
+    }
+
+    fn validate_milestones(milestone_descs: &Vec<(String, u32)>) -> Result<(), CrowdfundError> {
+        let ms_count = milestone_descs.len();
+        if !(2..=10).contains(&ms_count) {
+            return Err(CrowdfundError::InvalidMilestones);
+        }
+        let mut pct_sum: u32 = 0;
+        for i in 0..ms_count {
+            let (_, pct) = milestone_descs.get(i).unwrap();
+            pct_sum += pct;
+        }
+        if pct_sum != 10000 {
+            return Err(CrowdfundError::InvalidMilestones);
+        }
+        Ok(())
+    }
+
+    fn set_milestones(env: &Env, campaign_id: u64, milestone_descs: &Vec<(String, u32)>) {
+        for i in 0..milestone_descs.len() {
+            let (desc, pct) = milestone_descs.get(i).unwrap();
+            let milestone = Milestone {
+                id: i,
+                description: desc,
+                pct,
+                status: CrowdfundMilestoneStatus::Pending,
+            };
+            env.storage()
+                .persistent()
+                .set(
+                    &CrowdfundDataKey::CampaignMilestone(campaign_id, i),
+                    &milestone,
+                );
+        }
     }
 }

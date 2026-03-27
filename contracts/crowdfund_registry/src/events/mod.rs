@@ -1,4 +1,4 @@
-use soroban_sdk::{contractevent, Address, BytesN};
+use soroban_sdk::{contractevent, Address, BytesN, String};
 
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -109,6 +109,15 @@ pub struct CampaignApproved {
 pub struct CampaignRejected {
     #[topic]
     pub id: u64,
+    pub reason: String,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CampaignUpdated {
+    #[topic]
+    pub id: u64,
+    pub funding_goal: i128,
 }
 
 #[contractevent]

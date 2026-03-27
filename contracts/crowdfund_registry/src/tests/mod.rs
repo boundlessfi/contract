@@ -110,6 +110,7 @@ fn test_create_campaign() {
         &(t.env.ledger().timestamp() + 86400),
         &make_milestones(&t.env),
         &100i128,
+        &false,
     );
 
     assert_eq!(cid, 1);
@@ -132,6 +133,7 @@ fn test_governance_flow() {
         &(t.env.ledger().timestamp() + 86400),
         &make_milestones(&t.env),
         &100i128,
+        &false,
     );
 
     assert_eq!(t.client.get_campaign(&cid).status, CampaignStatus::Draft);
@@ -176,11 +178,68 @@ fn test_reject_campaign() {
         &(t.env.ledger().timestamp() + 86400),
         &make_milestones(&t.env),
         &100i128,
+        &false,
     );
 
     t.client.submit_for_review(&cid);
-    t.client.reject_campaign(&cid);
+    t.client.reject_campaign(&cid, &String::from_str(&t.env, "Need more detail"));
     assert_eq!(t.client.get_campaign(&cid).status, CampaignStatus::Draft);
+}
+
+#[test]
+fn test_create_and_submit_campaign() {
+    let t = setup();
+    let owner = t.admin.clone();
+
+    let cid = t.client.create_campaign(
+        &owner,
+        &String::from_str(&t.env, "Instant Submit"),
+        &10000i128,
+        &t.token_addr,
+        &(t.env.ledger().timestamp() + 86400),
+        &make_milestones(&t.env),
+        &100i128,
+        &true,
+    );
+
+    assert_eq!(t.client.get_campaign(&cid).status, CampaignStatus::Submitted);
+}
+
+#[test]
+fn test_update_campaign() {
+    let t = setup();
+    let owner = t.admin.clone();
+
+    let cid = t.client.create_campaign(
+        &owner,
+        &String::from_str(&t.env, "Draft"),
+        &10000i128,
+        &t.token_addr,
+        &(t.env.ledger().timestamp() + 86400),
+        &make_milestones(&t.env),
+        &100i128,
+        &false,
+    );
+
+    let new_goal = 20000i128;
+    let mut new_ms = Vec::new(&t.env);
+    new_ms.push_back((String::from_str(&t.env, "Phase 1"), 5000u32));
+    new_ms.push_back((String::from_str(&t.env, "Phase 2"), 5000u32));
+
+    t.client.update_campaign(
+        &cid,
+        &String::from_str(&t.env, "Updated"),
+        &new_goal,
+        &t.token_addr,
+        &(t.env.ledger().timestamp() + 90000),
+        &new_ms,
+        &200i128,
+    );
+
+    let campaign = t.client.get_campaign(&cid);
+    assert_eq!(campaign.funding_goal, new_goal);
+    assert_eq!(campaign.milestone_count, 2);
+    assert_eq!(campaign.min_pledge, 200);
 }
 
 #[test]
@@ -203,6 +262,7 @@ fn test_full_lifecycle() {
         &(t.env.ledger().timestamp() + 86400),
         &make_milestones(&t.env),
         &100i128,
+        &false,
     );
 
     // Advance through governance flow
@@ -252,6 +312,7 @@ fn test_failed_campaign_refund() {
         &deadline,
         &make_milestones(&t.env),
         &100i128,
+        &false,
     );
 
     // Advance through governance flow
@@ -296,6 +357,7 @@ fn test_cancel_campaign() {
         &(t.env.ledger().timestamp() + 86400),
         &make_milestones(&t.env),
         &100i128,
+        &false,
     );
 
     // Advance through governance flow
@@ -331,6 +393,7 @@ fn test_reject_milestone() {
         &(t.env.ledger().timestamp() + 86400),
         &make_milestones(&t.env),
         &100i128,
+        &false,
     );
 
     // Advance through governance flow
@@ -376,6 +439,7 @@ fn test_invalid_milestones_rejected() {
         &(t.env.ledger().timestamp() + 86400),
         &bad_ms,
         &100i128,
+        &false,
     );
     assert!(result.is_err());
 }
