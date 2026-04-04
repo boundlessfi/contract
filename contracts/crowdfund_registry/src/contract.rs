@@ -2,12 +2,12 @@ use crate::error::CrowdfundError;
 use crate::events::{
     CampaignApproved, CampaignCancelled, CampaignCreated, CampaignFailed, CampaignFunded,
     CampaignRejected, CampaignSubmittedForReview, CampaignTerminated, CampaignValidated,
-    DisputeResolved, MilestoneApproved, MilestoneDisputed, MilestoneOverdue,
+    CampaignVoteRejected, DisputeResolved, MilestoneApproved, MilestoneDisputed, MilestoneOverdue,
     MilestoneRevisionRequested, MilestoneSubmitted, PledgeRecorded, RefundBatchProcessed,
 };
 use crate::storage::{
     Campaign, CampaignStatus, CrowdfundDataKey, CrowdfundMilestoneStatus, DisputeResolution,
-    Milestone, VoteContext,
+    Milestone, VoteContext, VoteOption, VotingSession,
 };
 use boundless_types::ttl::{
     INSTANCE_TTL_EXTEND, INSTANCE_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND, PERSISTENT_TTL_THRESHOLD,
@@ -387,7 +387,11 @@ impl CrowdfundRegistry {
         campaign.vote_session_id = None;
         env.storage().persistent().set(&key, &campaign);
 
-        CampaignRejected { id: campaign_id, reason }.publish(&env);
+        CampaignRejected {
+            id: campaign_id,
+            reason,
+        }
+        .publish(&env);
         Ok(())
     }
 
@@ -441,17 +445,76 @@ impl CrowdfundRegistry {
             .ok_or(CrowdfundError::NoVoteSession)?;
 
         let gov_addr = Self::get_gov_addr(&env);
-        let args: Vec<Val> = Vec::from_array(&env, [session_id.into_val(&env)]);
-        let reached: bool = env.invoke_contract(&gov_addr, &sym(&env, "threshold_reached"), args);
 
-        if !reached {
-            return Err(CrowdfundError::VoteThresholdNotMet);
+        // Check if vote threshold has been reached
+        let threshold_args: Vec<Val> = Vec::from_array(&env, [session_id.clone().into_val(&env)]);
+        let reached: bool =
+            env.invoke_contract(&gov_addr, &sym(&env, "threshold_reached"), threshold_args);
+
+        if reached {
+            // Threshold reached — check which option won
+            let approve_args: Vec<Val> = Vec::from_array(
+                &env,
+                [
+                    session_id.clone().into_val(&env),
+                    0u32.into_val(&env), // option 0 = Approve
+                ],
+            );
+            let reject_args: Vec<Val> = Vec::from_array(
+                &env,
+                [
+                    session_id.into_val(&env),
+                    1u32.into_val(&env), // option 1 = Reject
+                ],
+            );
+
+            let approve_option: VoteOption =
+                env.invoke_contract(&gov_addr, &sym(&env, "get_option"), approve_args);
+            let reject_option: VoteOption =
+                env.invoke_contract(&gov_addr, &sym(&env, "get_option"), reject_args);
+
+            let approve_votes = approve_option.votes;
+            let reject_votes = reject_option.votes;
+
+            if approve_votes > reject_votes {
+                campaign.status = CampaignStatus::Campaigning;
+                env.storage().persistent().set(&key, &campaign);
+                CampaignValidated { id: campaign_id }.publish(&env);
+            } else if reject_votes > approve_votes {
+                campaign.status = CampaignStatus::Draft;
+                campaign.vote_session_id = None;
+                env.storage().persistent().set(&key, &campaign);
+                CampaignVoteRejected {
+                    id: campaign_id,
+                    reason: String::from_str(&env, "reject_majority"),
+                }
+                .publish(&env);
+            } else {
+                // Tie — leave state unchanged, session stays open
+                return Err(CrowdfundError::VoteThresholdNotMet);
+            }
+        } else {
+            // Threshold not reached — check if voting period has expired
+            let session_args: Vec<Val> = Vec::from_array(&env, [session_id.into_val(&env)]);
+            let session: VotingSession =
+                env.invoke_contract(&gov_addr, &sym(&env, "get_session"), session_args);
+
+            if env.ledger().timestamp() <= session.end_at {
+                // Voting still open, threshold not met yet
+                return Err(CrowdfundError::VoteThresholdNotMet);
+            }
+
+            // Voting expired without reaching threshold — reject
+            campaign.status = CampaignStatus::Draft;
+            campaign.vote_session_id = None;
+            env.storage().persistent().set(&key, &campaign);
+            CampaignVoteRejected {
+                id: campaign_id,
+                reason: String::from_str(&env, "expired_without_approval"),
+            }
+            .publish(&env);
         }
 
-        campaign.status = CampaignStatus::Campaigning;
-        env.storage().persistent().set(&key, &campaign);
-
-        CampaignValidated { id: campaign_id }.publish(&env);
         Ok(())
     }
 
@@ -961,11 +1024,7 @@ impl CrowdfundRegistry {
                         milestone_index.into_val(&env),
                     ],
                 );
-                env.invoke_contract::<()>(
-                    &escrow_addr,
-                    &sym(&env, "release_slot"),
-                    release_args,
-                );
+                env.invoke_contract::<()>(&escrow_addr, &sym(&env, "release_slot"), release_args);
 
                 // Check if all milestones are released
                 let mut all_done = true;
@@ -1173,12 +1232,10 @@ impl CrowdfundRegistry {
                 pct,
                 status: CrowdfundMilestoneStatus::Pending,
             };
-            env.storage()
-                .persistent()
-                .set(
-                    &CrowdfundDataKey::CampaignMilestone(campaign_id, i),
-                    &milestone,
-                );
+            env.storage().persistent().set(
+                &CrowdfundDataKey::CampaignMilestone(campaign_id, i),
+                &milestone,
+            );
         }
     }
 }
