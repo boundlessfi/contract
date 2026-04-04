@@ -926,10 +926,7 @@ fn test_owner_cancel_after_funded_fails() {
 
     advance_to_campaigning(&t, cid);
     t.client.pledge(&donor, &cid, &1100);
-    assert_eq!(
-        t.client.get_campaign(&cid).status,
-        CampaignStatus::Funded
-    );
+    assert_eq!(t.client.get_campaign(&cid).status, CampaignStatus::Funded);
 
     // Owner cannot cancel after funded
     let result = t.client.try_owner_cancel_campaign(&cid);
