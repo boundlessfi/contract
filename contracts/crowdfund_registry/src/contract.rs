@@ -2,7 +2,7 @@ use crate::error::CrowdfundError;
 use crate::events::{
     CampaignApproved, CampaignCancelled, CampaignCreated, CampaignFailed, CampaignFunded,
     CampaignRejected, CampaignSubmittedForReview, CampaignTerminated, CampaignValidated,
-    DisputeResolved, MilestoneApproved, MilestoneDisputed, MilestoneOverdue,
+    DisputeResolved, MilestoneApproved, MilestoneDisputed, MilestoneOverdue, MilestoneRejected,
     MilestoneRevisionRequested, MilestoneSubmitted, PledgeRecorded, RefundBatchProcessed,
 };
 use crate::storage::{
@@ -721,6 +721,12 @@ impl CrowdfundRegistry {
 
         ms.status = CrowdfundMilestoneStatus::Rejected;
         env.storage().persistent().set(&ms_key, &ms);
+
+        MilestoneRejected {
+            campaign_id,
+            milestone_id: milestone_index,
+        }
+        .publish(&env);
 
         Ok(())
     }
