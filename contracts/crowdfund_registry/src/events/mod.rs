@@ -141,6 +141,7 @@ pub struct MilestoneRevisionRequested {
 pub struct CampaignVoteRejected {
     #[topic]
     pub id: u64,
+    pub reason: String,
 }
 
 #[contractevent]
