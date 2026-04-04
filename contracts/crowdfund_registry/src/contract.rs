@@ -2,9 +2,9 @@ use crate::error::CrowdfundError;
 use crate::events::{
     CampaignApproved, CampaignCancelled, CampaignCreated, CampaignFailed, CampaignFunded,
     CampaignRejected, CampaignSubmittedForReview, CampaignTerminated, CampaignValidated,
-    CampaignVoteRejected, DisputeResolved, MilestoneApproved, MilestoneDisputed, MilestoneOverdue,
-    MilestoneRejected, MilestoneRevisionRequested, MilestoneSubmitted, PledgeRecorded,
-    RefundBatchProcessed,
+    CampaignVoteRejected, DisputeResolved, MilestoneApproved, MilestoneDisputed,
+    MilestoneEscalated, MilestoneOverdue, MilestoneRejected, MilestoneRevisionRequested,
+    MilestoneSubmitted, PledgeRecorded, RefundBatchProcessed,
 };
 use crate::storage::{
     Campaign, CampaignStatus, CrowdfundDataKey, CrowdfundMilestoneStatus, DisputeResolution,
@@ -1133,7 +1133,7 @@ impl CrowdfundRegistry {
         }
 
         let ms_key = CrowdfundDataKey::CampaignMilestone(campaign_id, milestone_index);
-        let ms: Milestone = env
+        let mut ms: Milestone = env
             .storage()
             .persistent()
             .get(&ms_key)
@@ -1149,7 +1149,71 @@ impl CrowdfundRegistry {
             return Err(CrowdfundError::MilestoneNotOverdue);
         }
 
+        // Record when flagged (only if not already flagged)
+        if ms.flagged_at == 0 {
+            ms.flagged_at = env.ledger().timestamp();
+            env.storage().persistent().set(&ms_key, &ms);
+        }
+
         MilestoneOverdue {
+            campaign_id,
+            milestone_id: milestone_index,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    /// Permissionless: escalate an overdue milestone after the 14-day grace period.
+    /// Rejects the milestone and cancels the campaign, enabling refunds.
+    pub fn escalate_overdue_milestone(
+        env: Env,
+        campaign_id: u64,
+        milestone_index: u32,
+    ) -> Result<(), CrowdfundError> {
+        let key = CrowdfundDataKey::Campaign(campaign_id);
+        let mut campaign: Campaign = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(CrowdfundError::CampaignNotFound)?;
+
+        if campaign.status != CampaignStatus::Funded && campaign.status != CampaignStatus::Executing
+        {
+            return Err(CrowdfundError::InvalidState);
+        }
+
+        let ms_key = CrowdfundDataKey::CampaignMilestone(campaign_id, milestone_index);
+        let mut ms: Milestone = env
+            .storage()
+            .persistent()
+            .get(&ms_key)
+            .ok_or(CrowdfundError::MilestoneNotFound)?;
+
+        if ms.flagged_at == 0 {
+            return Err(CrowdfundError::MilestoneNotFlagged);
+        }
+
+        // 14-day grace period after flagging
+        let grace_deadline = ms.flagged_at + 14 * 86_400;
+        if env.ledger().timestamp() <= grace_deadline {
+            return Err(CrowdfundError::GracePeriodNotExpired);
+        }
+
+        // Only escalate if still Pending (creator didn't submit during grace period)
+        if ms.status != CrowdfundMilestoneStatus::Pending {
+            return Err(CrowdfundError::MilestoneNotPending);
+        }
+
+        // Reject milestone and cancel campaign for refunds
+        ms.status = CrowdfundMilestoneStatus::Rejected;
+        env.storage().persistent().set(&ms_key, &ms);
+
+        campaign.status = CampaignStatus::Cancelled;
+        campaign.refund_progress = 0;
+        env.storage().persistent().set(&key, &campaign);
+
+        MilestoneEscalated {
             campaign_id,
             milestone_id: milestone_index,
         }
@@ -1238,6 +1302,7 @@ impl CrowdfundRegistry {
                 description: desc,
                 pct,
                 status: CrowdfundMilestoneStatus::Pending,
+                flagged_at: 0,
             };
             env.storage().persistent().set(
                 &CrowdfundDataKey::CampaignMilestone(campaign_id, i),

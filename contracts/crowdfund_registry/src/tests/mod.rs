@@ -693,3 +693,150 @@ fn test_vote_threshold_not_met_while_active() {
         CampaignStatus::Submitted
     );
 }
+
+#[test]
+fn test_overdue_flag_and_escalate() {
+    let t = setup();
+    let sac = StellarAssetClient::new(&t.env, &t.token_addr);
+
+    let owner = Address::generate(&t.env);
+    let donor = Address::generate(&t.env);
+    sac.mint(&donor, &10_000);
+
+    let deadline = t.env.ledger().timestamp() + 5000;
+
+    let cid = t.client.create_campaign(
+        &owner,
+        &String::from_str(&t.env, "Overdue escalation"),
+        &1000i128,
+        &t.token_addr,
+        &deadline,
+        &make_milestones(&t.env),
+        &100i128,
+        &false,
+    );
+
+    advance_to_campaigning(&t, cid);
+    t.client.pledge(&donor, &cid, &1100);
+
+    // Advance 30+ days past deadline → flag overdue
+    t.env.ledger().with_mut(|l| {
+        l.timestamp = deadline + 30 * 86_400 + 1;
+    });
+
+    t.client.flag_overdue_milestone(&cid, &0);
+
+    // Milestone should have flagged_at set
+    let ms = t.client.get_milestone(&cid, &0);
+    assert_eq!(ms.status, CrowdfundMilestoneStatus::Pending);
+    assert!(ms.flagged_at > 0);
+
+    // Escalate too early (before 14-day grace) → should fail
+    let result = t.client.try_escalate_overdue_milestone(&cid, &0);
+    assert!(result.is_err());
+
+    // Advance 14+ days past flagging
+    t.env.ledger().with_mut(|l| {
+        l.timestamp += 14 * 86_400 + 1;
+    });
+
+    // Escalate now → should succeed
+    t.client.escalate_overdue_milestone(&cid, &0);
+
+    let ms = t.client.get_milestone(&cid, &0);
+    assert_eq!(ms.status, CrowdfundMilestoneStatus::Rejected);
+
+    let campaign = t.client.get_campaign(&cid);
+    assert_eq!(campaign.status, CampaignStatus::Cancelled);
+
+    // Backers can get refunds
+    let balance_before = t.token.balance(&donor);
+    t.client.process_refund_batch(&cid);
+    assert!(t.token.balance(&donor) > balance_before);
+}
+
+#[test]
+fn test_overdue_escalate_not_flagged_fails() {
+    let t = setup();
+    let sac = StellarAssetClient::new(&t.env, &t.token_addr);
+
+    let owner = Address::generate(&t.env);
+    let donor = Address::generate(&t.env);
+    sac.mint(&donor, &10_000);
+
+    let deadline = t.env.ledger().timestamp() + 5000;
+
+    let cid = t.client.create_campaign(
+        &owner,
+        &String::from_str(&t.env, "Not flagged"),
+        &1000i128,
+        &t.token_addr,
+        &deadline,
+        &make_milestones(&t.env),
+        &100i128,
+        &false,
+    );
+
+    advance_to_campaigning(&t, cid);
+    t.client.pledge(&donor, &cid, &1100);
+
+    // Try to escalate without flagging first → should fail
+    t.env.ledger().with_mut(|l| {
+        l.timestamp = deadline + 60 * 86_400;
+    });
+
+    let result = t.client.try_escalate_overdue_milestone(&cid, &0);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_overdue_creator_submits_during_grace_period() {
+    let t = setup();
+    let sac = StellarAssetClient::new(&t.env, &t.token_addr);
+
+    let owner = Address::generate(&t.env);
+    let donor = Address::generate(&t.env);
+    sac.mint(&donor, &10_000);
+
+    let deadline = t.env.ledger().timestamp() + 5000;
+
+    let cid = t.client.create_campaign(
+        &owner,
+        &String::from_str(&t.env, "Grace period save"),
+        &1000i128,
+        &t.token_addr,
+        &deadline,
+        &make_milestones(&t.env),
+        &100i128,
+        &false,
+    );
+
+    advance_to_campaigning(&t, cid);
+    t.client.pledge(&donor, &cid, &1100);
+
+    // Flag overdue
+    t.env.ledger().with_mut(|l| {
+        l.timestamp = deadline + 30 * 86_400 + 1;
+    });
+    t.client.flag_overdue_milestone(&cid, &0);
+
+    // Creator submits during grace period
+    t.client.submit_milestone(&cid, &0);
+    let ms = t.client.get_milestone(&cid, &0);
+    assert_eq!(ms.status, CrowdfundMilestoneStatus::Submitted);
+
+    // Advance past grace period
+    t.env.ledger().with_mut(|l| {
+        l.timestamp += 14 * 86_400 + 1;
+    });
+
+    // Escalate should fail — milestone is no longer Pending
+    let result = t.client.try_escalate_overdue_milestone(&cid, &0);
+    assert!(result.is_err());
+
+    // Campaign still active
+    assert_eq!(
+        t.client.get_campaign(&cid).status,
+        CampaignStatus::Executing
+    );
+}

@@ -84,6 +84,7 @@ pub struct Milestone {
     pub description: String,
     pub pct: u32, // percentage of total (basis points: 10000 = 100%)
     pub status: CrowdfundMilestoneStatus,
+    pub flagged_at: u64, // 0 = not flagged; otherwise timestamp when overdue was flagged
 }
 
 #[contracttype]
