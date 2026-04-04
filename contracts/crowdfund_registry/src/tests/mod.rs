@@ -182,7 +182,8 @@ fn test_reject_campaign() {
     );
 
     t.client.submit_for_review(&cid);
-    t.client.reject_campaign(&cid, &String::from_str(&t.env, "Need more detail"));
+    t.client
+        .reject_campaign(&cid, &String::from_str(&t.env, "Need more detail"));
     assert_eq!(t.client.get_campaign(&cid).status, CampaignStatus::Draft);
 }
 
@@ -202,7 +203,10 @@ fn test_create_and_submit_campaign() {
         &true,
     );
 
-    assert_eq!(t.client.get_campaign(&cid).status, CampaignStatus::Submitted);
+    assert_eq!(
+        t.client.get_campaign(&cid).status,
+        CampaignStatus::Submitted
+    );
 }
 
 #[test]

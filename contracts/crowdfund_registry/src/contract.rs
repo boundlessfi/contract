@@ -387,7 +387,11 @@ impl CrowdfundRegistry {
         campaign.vote_session_id = None;
         env.storage().persistent().set(&key, &campaign);
 
-        CampaignRejected { id: campaign_id, reason }.publish(&env);
+        CampaignRejected {
+            id: campaign_id,
+            reason,
+        }
+        .publish(&env);
         Ok(())
     }
 
@@ -967,11 +971,7 @@ impl CrowdfundRegistry {
                         milestone_index.into_val(&env),
                     ],
                 );
-                env.invoke_contract::<()>(
-                    &escrow_addr,
-                    &sym(&env, "release_slot"),
-                    release_args,
-                );
+                env.invoke_contract::<()>(&escrow_addr, &sym(&env, "release_slot"), release_args);
 
                 // Check if all milestones are released
                 let mut all_done = true;
@@ -1179,12 +1179,10 @@ impl CrowdfundRegistry {
                 pct,
                 status: CrowdfundMilestoneStatus::Pending,
             };
-            env.storage()
-                .persistent()
-                .set(
-                    &CrowdfundDataKey::CampaignMilestone(campaign_id, i),
-                    &milestone,
-                );
+            env.storage().persistent().set(
+                &CrowdfundDataKey::CampaignMilestone(campaign_id, i),
+                &milestone,
+            );
         }
     }
 }

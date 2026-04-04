@@ -328,7 +328,8 @@ fn test_governance_rejection_flow() {
     p.crowdfund.submit_for_review(&cid);
 
     // Admin rejects → back to Draft
-    p.crowdfund.reject_campaign(&cid, &String::from_str(&p.env, "Needs more detail"));
+    p.crowdfund
+        .reject_campaign(&cid, &String::from_str(&p.env, "Needs more detail"));
     assert_eq!(p.crowdfund.get_campaign(&cid).status, CampaignStatus::Draft);
 
     // Owner can resubmit
