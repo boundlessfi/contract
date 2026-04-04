@@ -32,4 +32,6 @@ pub enum CrowdfundError {
     VoteThresholdNotMet = 825,
     NoVoteSession = 826,
     MilestoneNotDisputed = 827,
+    MilestoneNotFlagged = 828,
+    GracePeriodNotExpired = 829,
 }

@@ -2213,6 +2213,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "flagged_at"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "id"
                     },
                     "val": {
@@ -2276,6 +2284,14 @@
                     },
                     "val": {
                       "string": "Beta"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "flagged_at"
+                    },
+                    "val": {
+                      "u64": "0"
                     }
                   },
                   {
