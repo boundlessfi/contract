@@ -1,6 +1,6 @@
 use soroban_sdk::{contracttype, Address, BytesN, String};
 
-// Local copy of governance_voting VoteContext for cross-contract serialization.
+// Local copies of governance_voting types for cross-contract serialization.
 #[contracttype]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum VoteContext {
@@ -8,6 +8,41 @@ pub enum VoteContext {
     RetrospectiveGrant,
     QFRound,
     HackathonJudging,
+}
+
+#[contracttype]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum VoteStatus {
+    Pending,
+    Active,
+    Concluded,
+    Cancelled,
+}
+
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct VoteOption {
+    pub id: u32,
+    pub label: String,
+    pub votes: u32,
+    pub weighted_votes: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct VotingSession {
+    pub session_id: BytesN<32>,
+    pub context: VoteContext,
+    pub module_id: u64,
+    pub created_at: u64,
+    pub start_at: u64,
+    pub end_at: u64,
+    pub status: VoteStatus,
+    pub threshold: Option<u32>,
+    pub threshold_reached: bool,
+    pub total_votes: u32,
+    pub quorum: Option<u32>,
+    pub weight_by_reputation: bool,
 }
 
 #[contracttype]

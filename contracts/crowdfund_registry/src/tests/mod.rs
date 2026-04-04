@@ -580,3 +580,112 @@ fn test_resolve_dispute_not_disputed_fails() {
         .try_resolve_dispute(&cid, &0, &DisputeResolution::ApproveCreator);
     assert!(result.is_err());
 }
+
+#[test]
+fn test_vote_reject_returns_to_draft() {
+    let t = setup();
+    let owner = t.admin.clone();
+
+    let cid = t.client.create_campaign(
+        &owner,
+        &String::from_str(&t.env, "Vote reject"),
+        &10000i128,
+        &t.token_addr,
+        &(t.env.ledger().timestamp() + 86400),
+        &make_milestones(&t.env),
+        &100i128,
+        &false,
+    );
+
+    t.client.submit_for_review(&cid);
+
+    // Admin approves → creates vote session (threshold=1)
+    t.client.approve_campaign(&cid, &1000, &1);
+    assert_eq!(
+        t.client.get_campaign(&cid).status,
+        CampaignStatus::Submitted
+    );
+
+    // Voter votes "Reject" (option 1)
+    let voter = Address::generate(&t.env);
+    t.client.vote_campaign(&voter, &cid, &1);
+
+    // Check threshold → should reject back to Draft
+    t.client.check_vote_threshold(&cid);
+
+    let campaign = t.client.get_campaign(&cid);
+    assert_eq!(campaign.status, CampaignStatus::Draft);
+    assert!(campaign.vote_session_id.is_none());
+}
+
+#[test]
+fn test_vote_expired_without_quorum_returns_to_draft() {
+    let t = setup();
+    let owner = t.admin.clone();
+
+    let cid = t.client.create_campaign(
+        &owner,
+        &String::from_str(&t.env, "Vote expire"),
+        &10000i128,
+        &t.token_addr,
+        &(t.env.ledger().timestamp() + 86400),
+        &make_milestones(&t.env),
+        &100i128,
+        &false,
+    );
+
+    t.client.submit_for_review(&cid);
+
+    // Admin approves → creates vote session (threshold=5, duration=1000)
+    t.client.approve_campaign(&cid, &1000, &5);
+    assert_eq!(
+        t.client.get_campaign(&cid).status,
+        CampaignStatus::Submitted
+    );
+
+    // Only 1 vote cast (threshold is 5), so threshold not reached
+    let voter = Address::generate(&t.env);
+    t.client.vote_campaign(&voter, &cid, &0);
+
+    // Advance past voting deadline
+    t.env.ledger().with_mut(|l| {
+        l.timestamp += 1001;
+    });
+
+    // Check threshold → voting expired, should reject back to Draft
+    t.client.check_vote_threshold(&cid);
+
+    let campaign = t.client.get_campaign(&cid);
+    assert_eq!(campaign.status, CampaignStatus::Draft);
+    assert!(campaign.vote_session_id.is_none());
+}
+
+#[test]
+fn test_vote_threshold_not_met_while_active() {
+    let t = setup();
+    let owner = t.admin.clone();
+
+    let cid = t.client.create_campaign(
+        &owner,
+        &String::from_str(&t.env, "Still voting"),
+        &10000i128,
+        &t.token_addr,
+        &(t.env.ledger().timestamp() + 86400),
+        &make_milestones(&t.env),
+        &100i128,
+        &false,
+    );
+
+    t.client.submit_for_review(&cid);
+    t.client.approve_campaign(&cid, &1000, &5);
+
+    // No votes yet, voting still active → should error
+    let result = t.client.try_check_vote_threshold(&cid);
+    assert!(result.is_err());
+
+    // Campaign stays in Submitted
+    assert_eq!(
+        t.client.get_campaign(&cid).status,
+        CampaignStatus::Submitted
+    );
+}

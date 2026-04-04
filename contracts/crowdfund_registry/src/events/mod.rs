@@ -138,6 +138,13 @@ pub struct MilestoneRevisionRequested {
 
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CampaignVoteRejected {
+    #[topic]
+    pub id: u64,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DisputeResolved {
     #[topic]
     pub campaign_id: u64,
