@@ -1,8 +1,8 @@
 use crate::error::CrowdfundError;
 use crate::events::{
-    CampaignApproved, CampaignCancelled, CampaignCreated, CampaignFailed, CampaignFunded,
-    CampaignRejected, CampaignSubmittedForReview, CampaignTerminated, CampaignValidated,
-    CampaignVoteRejected, DisputeResolved, MilestoneApproved, MilestoneDisputed,
+    CampaignApproved, CampaignCancelled, CampaignCancelledByOwner, CampaignCreated, CampaignFailed,
+    CampaignFunded, CampaignRejected, CampaignSubmittedForReview, CampaignTerminated,
+    CampaignValidated, CampaignVoteRejected, DisputeResolved, MilestoneApproved, MilestoneDisputed,
     MilestoneEscalated, MilestoneOverdue, MilestoneRejected, MilestoneRevisionRequested,
     MilestoneSubmitted, PledgeRecorded, RefundBatchProcessed,
 };
@@ -944,6 +944,33 @@ impl CrowdfundRegistry {
         env.storage().persistent().set(&key, &campaign);
 
         CampaignCancelled { id: campaign_id }.publish(&env);
+        Ok(())
+    }
+
+    pub fn owner_cancel_campaign(env: Env, campaign_id: u64) -> Result<(), CrowdfundError> {
+        let key = CrowdfundDataKey::Campaign(campaign_id);
+        let mut campaign: Campaign = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(CrowdfundError::CampaignNotFound)?;
+
+        campaign.owner.require_auth();
+
+        // Only allowed before funding completes
+        if campaign.status != CampaignStatus::Draft
+            && campaign.status != CampaignStatus::Submitted
+            && campaign.status != CampaignStatus::Campaigning
+        {
+            return Err(CrowdfundError::InvalidState);
+        }
+
+        campaign.status = CampaignStatus::Cancelled;
+        campaign.refund_progress = 0;
+        campaign.vote_session_id = None;
+        env.storage().persistent().set(&key, &campaign);
+
+        CampaignCancelledByOwner { id: campaign_id }.publish(&env);
         Ok(())
     }
 

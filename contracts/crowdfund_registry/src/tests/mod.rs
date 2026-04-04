@@ -840,3 +840,95 @@ fn test_overdue_creator_submits_during_grace_period() {
         CampaignStatus::Executing
     );
 }
+
+#[test]
+fn test_owner_cancel_in_draft() {
+    let t = setup();
+    let owner = Address::generate(&t.env);
+
+    let cid = t.client.create_campaign(
+        &owner,
+        &String::from_str(&t.env, "Owner cancel draft"),
+        &10000i128,
+        &t.token_addr,
+        &(t.env.ledger().timestamp() + 86400),
+        &make_milestones(&t.env),
+        &100i128,
+        &false,
+    );
+
+    assert_eq!(t.client.get_campaign(&cid).status, CampaignStatus::Draft);
+
+    t.client.owner_cancel_campaign(&cid);
+    assert_eq!(
+        t.client.get_campaign(&cid).status,
+        CampaignStatus::Cancelled
+    );
+}
+
+#[test]
+fn test_owner_cancel_in_campaigning_with_refunds() {
+    let t = setup();
+    let sac = StellarAssetClient::new(&t.env, &t.token_addr);
+
+    let owner = Address::generate(&t.env);
+    let donor = Address::generate(&t.env);
+    sac.mint(&donor, &10_000);
+
+    let cid = t.client.create_campaign(
+        &owner,
+        &String::from_str(&t.env, "Owner cancel campaigning"),
+        &10000i128,
+        &t.token_addr,
+        &(t.env.ledger().timestamp() + 86400),
+        &make_milestones(&t.env),
+        &100i128,
+        &false,
+    );
+
+    advance_to_campaigning(&t, cid);
+
+    // Backer pledges
+    t.client.pledge(&donor, &cid, &500);
+    let balance_after_pledge = t.token.balance(&donor);
+
+    // Owner cancels
+    t.client.owner_cancel_campaign(&cid);
+    assert_eq!(
+        t.client.get_campaign(&cid).status,
+        CampaignStatus::Cancelled
+    );
+
+    // Refunds work
+    t.client.process_refund_batch(&cid);
+    assert_eq!(t.token.balance(&donor), balance_after_pledge + 500);
+}
+
+#[test]
+fn test_owner_cancel_after_funded_fails() {
+    let t = setup();
+    let sac = StellarAssetClient::new(&t.env, &t.token_addr);
+
+    let owner = Address::generate(&t.env);
+    let donor = Address::generate(&t.env);
+    sac.mint(&donor, &10_000);
+
+    let cid = t.client.create_campaign(
+        &owner,
+        &String::from_str(&t.env, "Owner cancel funded"),
+        &1000i128,
+        &t.token_addr,
+        &(t.env.ledger().timestamp() + 86400),
+        &make_milestones(&t.env),
+        &100i128,
+        &false,
+    );
+
+    advance_to_campaigning(&t, cid);
+    t.client.pledge(&donor, &cid, &1100);
+    assert_eq!(t.client.get_campaign(&cid).status, CampaignStatus::Funded);
+
+    // Owner cannot cancel after funded
+    let result = t.client.try_owner_cancel_campaign(&cid);
+    assert!(result.is_err());
+}

@@ -67,6 +67,13 @@ pub struct CampaignCancelled {
 
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CampaignCancelledByOwner {
+    #[topic]
+    pub id: u64,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RefundBatchProcessed {
     #[topic]
     pub campaign_id: u64,
