@@ -31,4 +31,5 @@ pub enum CrowdfundError {
     NotSubmitted = 824,
     VoteThresholdNotMet = 825,
     NoVoteSession = 826,
+    MilestoneNotDisputed = 827,
 }

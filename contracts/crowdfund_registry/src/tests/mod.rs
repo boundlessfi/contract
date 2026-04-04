@@ -1,5 +1,5 @@
 use crate::contract::{CrowdfundRegistry, CrowdfundRegistryClient};
-use crate::storage::CampaignStatus;
+use crate::storage::{CampaignStatus, CrowdfundMilestoneStatus, DisputeResolution};
 use core_escrow::{CoreEscrow, CoreEscrowClient};
 use governance_voting::{GovernanceVoting, GovernanceVotingClient};
 use reputation_registry::{ReputationRegistry, ReputationRegistryClient};
@@ -441,5 +441,142 @@ fn test_invalid_milestones_rejected() {
         &100i128,
         &false,
     );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_resolve_dispute_approve_creator() {
+    let t = setup();
+    let sac = StellarAssetClient::new(&t.env, &t.token_addr);
+
+    let owner = Address::generate(&t.env);
+    let donor = Address::generate(&t.env);
+    sac.mint(&donor, &10_000);
+
+    let cid = t.client.create_campaign(
+        &owner,
+        &String::from_str(&t.env, "Dispute Creator Win"),
+        &1000i128,
+        &t.token_addr,
+        &(t.env.ledger().timestamp() + 86400),
+        &make_milestones(&t.env),
+        &100i128,
+        &false,
+    );
+
+    advance_to_campaigning(&t, cid);
+
+    // Fund the campaign
+    t.client.pledge(&donor, &cid, &1100);
+    assert_eq!(t.client.get_campaign(&cid).status, CampaignStatus::Funded);
+
+    // Submit milestone 0
+    t.client.submit_milestone(&cid, &0);
+    assert_eq!(
+        t.client.get_dispute_status(&cid, &0),
+        CrowdfundMilestoneStatus::Submitted
+    );
+
+    // Backer disputes milestone 0
+    t.client.dispute_milestone(&donor, &cid, &0);
+    assert_eq!(
+        t.client.get_dispute_status(&cid, &0),
+        CrowdfundMilestoneStatus::Disputed
+    );
+
+    // Admin resolves in favor of creator → funds released
+    let balance_before = t.token.balance(&owner);
+    t.client
+        .resolve_dispute(&cid, &0, &DisputeResolution::ApproveCreator);
+
+    let ms = t.client.get_milestone(&cid, &0);
+    assert_eq!(ms.status, CrowdfundMilestoneStatus::Released);
+    assert!(t.token.balance(&owner) > balance_before);
+
+    // Campaign is still Executing (milestone 1 not done yet)
+    let campaign = t.client.get_campaign(&cid);
+    assert_eq!(campaign.status, CampaignStatus::Executing);
+
+    // Complete milestone 1 normally
+    t.client.submit_milestone(&cid, &1);
+    t.client.approve_milestone(&cid, &1);
+
+    let campaign = t.client.get_campaign(&cid);
+    assert_eq!(campaign.status, CampaignStatus::Completed);
+}
+
+#[test]
+fn test_resolve_dispute_approve_backer() {
+    let t = setup();
+    let sac = StellarAssetClient::new(&t.env, &t.token_addr);
+
+    let owner = Address::generate(&t.env);
+    let donor = Address::generate(&t.env);
+    sac.mint(&donor, &10_000);
+
+    let cid = t.client.create_campaign(
+        &owner,
+        &String::from_str(&t.env, "Dispute Backer Win"),
+        &1000i128,
+        &t.token_addr,
+        &(t.env.ledger().timestamp() + 86400),
+        &make_milestones(&t.env),
+        &100i128,
+        &false,
+    );
+
+    advance_to_campaigning(&t, cid);
+
+    // Fund the campaign
+    t.client.pledge(&donor, &cid, &1100);
+
+    // Submit and dispute milestone 0
+    t.client.submit_milestone(&cid, &0);
+    t.client.dispute_milestone(&donor, &cid, &0);
+
+    // Admin resolves in favor of backer → milestone rejected, campaign cancelled
+    let balance_before_refund = t.token.balance(&donor);
+    t.client
+        .resolve_dispute(&cid, &0, &DisputeResolution::ApproveBacker);
+
+    let ms = t.client.get_milestone(&cid, &0);
+    assert_eq!(ms.status, CrowdfundMilestoneStatus::Rejected);
+
+    let campaign = t.client.get_campaign(&cid);
+    assert_eq!(campaign.status, CampaignStatus::Cancelled);
+
+    // Backers can now get refunds
+    t.client.process_refund_batch(&cid);
+    assert!(t.token.balance(&donor) > balance_before_refund);
+}
+
+#[test]
+fn test_resolve_dispute_not_disputed_fails() {
+    let t = setup();
+    let sac = StellarAssetClient::new(&t.env, &t.token_addr);
+
+    let owner = Address::generate(&t.env);
+    let donor = Address::generate(&t.env);
+    sac.mint(&donor, &10_000);
+
+    let cid = t.client.create_campaign(
+        &owner,
+        &String::from_str(&t.env, "Not disputed"),
+        &1000i128,
+        &t.token_addr,
+        &(t.env.ledger().timestamp() + 86400),
+        &make_milestones(&t.env),
+        &100i128,
+        &false,
+    );
+
+    advance_to_campaigning(&t, cid);
+    t.client.pledge(&donor, &cid, &1100);
+    t.client.submit_milestone(&cid, &0);
+
+    // Try to resolve a non-disputed milestone → should fail
+    let result = t
+        .client
+        .try_resolve_dispute(&cid, &0, &DisputeResolution::ApproveCreator);
     assert!(result.is_err());
 }

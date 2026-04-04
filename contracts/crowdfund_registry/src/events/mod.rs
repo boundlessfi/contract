@@ -1,3 +1,4 @@
+use crate::storage::DisputeResolution;
 use soroban_sdk::{contractevent, Address, BytesN, String};
 
 #[contractevent]
@@ -133,4 +134,13 @@ pub struct MilestoneRevisionRequested {
     #[topic]
     pub campaign_id: u64,
     pub milestone_id: u32,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DisputeResolved {
+    #[topic]
+    pub campaign_id: u64,
+    pub milestone_id: u32,
+    pub resolution: DisputeResolution,
 }

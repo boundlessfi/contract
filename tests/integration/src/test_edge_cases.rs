@@ -46,6 +46,7 @@ fn test_request_milestone_revision() {
         &(p.env.ledger().timestamp() + 86400),
         &make_milestones(&p.env),
         &100i128,
+        &false,
     );
 
     advance_to_campaigning(&p, cid);
@@ -103,6 +104,7 @@ fn test_revision_on_disputed_milestone() {
         &(p.env.ledger().timestamp() + 86400),
         &make_milestones(&p.env),
         &100i128,
+        &false,
     );
 
     advance_to_campaigning(&p, cid);
@@ -142,6 +144,7 @@ fn test_double_pledge_accumulates() {
         &(p.env.ledger().timestamp() + 86400),
         &make_milestones(&p.env),
         &100i128,
+        &false,
     );
 
     advance_to_campaigning(&p, cid);
@@ -178,6 +181,7 @@ fn test_governance_double_vote_rejected() {
         &(p.env.ledger().timestamp() + 86400),
         &make_milestones(&p.env),
         &100i128,
+        &false,
     );
 
     p.crowdfund.submit_for_review(&cid);
@@ -210,6 +214,7 @@ fn test_pledge_below_minimum_rejected() {
         &(p.env.ledger().timestamp() + 86400),
         &make_milestones(&p.env),
         &500i128, // min pledge = 500
+        &false,
     );
 
     advance_to_campaigning(&p, cid);
@@ -354,6 +359,7 @@ fn test_pledge_in_draft_rejected() {
         &(p.env.ledger().timestamp() + 86400),
         &make_milestones(&p.env),
         &100i128,
+        &false,
     );
 
     // Campaign is in Draft — pledge should fail

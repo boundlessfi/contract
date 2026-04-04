@@ -75,6 +75,7 @@ fn test_single_contributor_across_all_modules() {
         &(p.env.ledger().timestamp() + 86400),
         &milestones,
         &100i128,
+        &false,
     );
 
     advance_to_campaigning(&p, cid);
@@ -176,6 +177,7 @@ fn test_platform_fee_accounting_via_pledges() {
         &(p.env.ledger().timestamp() + 86400),
         &milestones,
         &100i128,
+        &false,
     );
 
     advance_to_campaigning(&p, cid);
