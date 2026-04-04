@@ -2,9 +2,9 @@ use crate::error::CrowdfundError;
 use crate::events::{
     CampaignApproved, CampaignCancelled, CampaignCreated, CampaignFailed, CampaignFunded,
     CampaignRejected, CampaignSubmittedForReview, CampaignTerminated, CampaignValidated,
-    CampaignVoteRejected, DisputeResolved, MilestoneApproved, MilestoneDisputed, MilestoneEscalated,
-    MilestoneOverdue, MilestoneRejected, MilestoneRevisionRequested, MilestoneSubmitted,
-    PledgeRecorded, RefundBatchProcessed,
+    CampaignVoteRejected, DisputeResolved, MilestoneApproved, MilestoneDisputed,
+    MilestoneEscalated, MilestoneOverdue, MilestoneRejected, MilestoneRevisionRequested,
+    MilestoneSubmitted, PledgeRecorded, RefundBatchProcessed,
 };
 use crate::storage::{
     Campaign, CampaignStatus, CrowdfundDataKey, CrowdfundMilestoneStatus, DisputeResolution,
