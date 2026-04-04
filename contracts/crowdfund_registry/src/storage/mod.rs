@@ -36,6 +36,13 @@ pub enum CrowdfundMilestoneStatus {
 }
 
 #[contracttype]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DisputeResolution {
+    ApproveCreator,
+    ApproveBacker,
+}
+
+#[contracttype]
 #[derive(Clone, Debug)]
 pub struct Milestone {
     pub id: u32,

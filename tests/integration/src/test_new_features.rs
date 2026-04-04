@@ -233,6 +233,7 @@ fn test_dispute_milestone() {
         &(p.env.ledger().timestamp() + 86400),
         &make_milestones(&p.env),
         &100i128,
+        &false,
     );
 
     advance_to_campaigning(&p, cid);
@@ -276,6 +277,7 @@ fn test_dispute_milestone_non_backer_rejected() {
         &(p.env.ledger().timestamp() + 86400),
         &make_milestones(&p.env),
         &100i128,
+        &false,
     );
 
     advance_to_campaigning(&p, cid);
@@ -302,6 +304,7 @@ fn test_terminate_campaign() {
         &(p.env.ledger().timestamp() + 86400),
         &make_milestones(&p.env),
         &100i128,
+        &false,
     );
 
     advance_to_campaigning(&p, cid);
@@ -338,6 +341,7 @@ fn test_flag_overdue_milestone() {
         &deadline,
         &make_milestones(&p.env),
         &100i128,
+        &false,
     );
 
     advance_to_campaigning(&p, cid);
@@ -376,6 +380,7 @@ fn test_flag_overdue_too_early() {
         &deadline,
         &make_milestones(&p.env),
         &100i128,
+        &false,
     );
 
     advance_to_campaigning(&p, cid);

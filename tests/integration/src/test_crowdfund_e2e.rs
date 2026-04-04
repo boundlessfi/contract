@@ -40,6 +40,7 @@ fn test_campaign_full_success_lifecycle() {
         &(p.env.ledger().timestamp() + 86400),
         &make_milestones(&p.env),
         &100i128,
+        &false,
     );
 
     let campaign = p.crowdfund.get_campaign(&cid);
@@ -99,6 +100,7 @@ fn test_campaign_failure_with_batched_refund() {
         &deadline,
         &make_milestones(&p.env),
         &100i128,
+        &false,
     );
 
     // Advance through governance flow
@@ -146,6 +148,7 @@ fn test_campaign_cancel_with_refund() {
         &(p.env.ledger().timestamp() + 86400),
         &make_milestones(&p.env),
         &50i128,
+        &false,
     );
 
     // Advance through governance flow
@@ -182,6 +185,7 @@ fn test_milestone_rejection_and_resubmit() {
         &(p.env.ledger().timestamp() + 86400),
         &make_milestones(&p.env),
         &100i128,
+        &false,
     );
 
     // Advance through governance flow
@@ -239,6 +243,7 @@ fn test_pledge_fee_routing() {
         &(p.env.ledger().timestamp() + 86400),
         &make_milestones(&p.env),
         &100i128,
+        &false,
     );
 
     // Advance through governance flow
@@ -271,6 +276,7 @@ fn test_governance_approval_flow() {
         &(p.env.ledger().timestamp() + 86400),
         &make_milestones(&p.env),
         &100i128,
+        &false,
     );
 
     // Starts in Draft
@@ -316,12 +322,13 @@ fn test_governance_rejection_flow() {
         &(p.env.ledger().timestamp() + 86400),
         &make_milestones(&p.env),
         &100i128,
+        &false,
     );
 
     p.crowdfund.submit_for_review(&cid);
 
     // Admin rejects → back to Draft
-    p.crowdfund.reject_campaign(&cid);
+    p.crowdfund.reject_campaign(&cid, &String::from_str(&p.env, "Needs more detail"));
     assert_eq!(p.crowdfund.get_campaign(&cid).status, CampaignStatus::Draft);
 
     // Owner can resubmit

@@ -2,11 +2,12 @@ use crate::error::CrowdfundError;
 use crate::events::{
     CampaignApproved, CampaignCancelled, CampaignCreated, CampaignFailed, CampaignFunded,
     CampaignRejected, CampaignSubmittedForReview, CampaignTerminated, CampaignValidated,
-    MilestoneApproved, MilestoneDisputed, MilestoneOverdue, MilestoneRevisionRequested,
-    MilestoneSubmitted, PledgeRecorded, RefundBatchProcessed,
+    DisputeResolved, MilestoneApproved, MilestoneDisputed, MilestoneOverdue,
+    MilestoneRevisionRequested, MilestoneSubmitted, PledgeRecorded, RefundBatchProcessed,
 };
 use crate::storage::{
-    Campaign, CampaignStatus, CrowdfundDataKey, CrowdfundMilestoneStatus, Milestone, VoteContext,
+    Campaign, CampaignStatus, CrowdfundDataKey, CrowdfundMilestoneStatus, DisputeResolution,
+    Milestone, VoteContext,
 };
 use boundless_types::ttl::{
     INSTANCE_TTL_EXTEND, INSTANCE_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND, PERSISTENT_TTL_THRESHOLD,
@@ -89,6 +90,20 @@ impl CrowdfundRegistry {
                 milestone_index,
             ))
             .ok_or(CrowdfundError::MilestoneNotFound)
+    }
+
+    pub fn get_dispute_status(
+        env: Env,
+        campaign_id: u64,
+        milestone_index: u32,
+    ) -> Result<CrowdfundMilestoneStatus, CrowdfundError> {
+        let ms_key = CrowdfundDataKey::CampaignMilestone(campaign_id, milestone_index);
+        let ms: Milestone = env
+            .storage()
+            .persistent()
+            .get(&ms_key)
+            .ok_or(CrowdfundError::MilestoneNotFound)?;
+        Ok(ms.status)
     }
 
     pub fn get_pledge(env: Env, campaign_id: u64, backer: Address) -> i128 {
@@ -902,6 +917,109 @@ impl CrowdfundRegistry {
         }
         .publish(&env);
 
+        Ok(())
+    }
+
+    pub fn resolve_dispute(
+        env: Env,
+        campaign_id: u64,
+        milestone_index: u32,
+        resolution: DisputeResolution,
+    ) -> Result<(), CrowdfundError> {
+        let admin = Self::require_admin(&env)?;
+        admin.require_auth();
+
+        let key = CrowdfundDataKey::Campaign(campaign_id);
+        let mut campaign: Campaign = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(CrowdfundError::CampaignNotFound)?;
+
+        let ms_key = CrowdfundDataKey::CampaignMilestone(campaign_id, milestone_index);
+        let mut ms: Milestone = env
+            .storage()
+            .persistent()
+            .get(&ms_key)
+            .ok_or(CrowdfundError::MilestoneNotFound)?;
+
+        if ms.status != CrowdfundMilestoneStatus::Disputed {
+            return Err(CrowdfundError::MilestoneNotDisputed);
+        }
+
+        match resolution {
+            DisputeResolution::ApproveCreator => {
+                // Resolve in favor of creator: release milestone funds
+                ms.status = CrowdfundMilestoneStatus::Released;
+                env.storage().persistent().set(&ms_key, &ms);
+
+                let escrow_addr = Self::get_escrow_addr(&env);
+                let release_args: Vec<Val> = Vec::from_array(
+                    &env,
+                    [
+                        campaign.pool_id.clone().into_val(&env),
+                        milestone_index.into_val(&env),
+                    ],
+                );
+                env.invoke_contract::<()>(
+                    &escrow_addr,
+                    &sym(&env, "release_slot"),
+                    release_args,
+                );
+
+                // Check if all milestones are released
+                let mut all_done = true;
+                for i in 0..campaign.milestone_count {
+                    let m: Milestone = env
+                        .storage()
+                        .persistent()
+                        .get(&CrowdfundDataKey::CampaignMilestone(campaign_id, i))
+                        .unwrap();
+                    if m.status != CrowdfundMilestoneStatus::Released {
+                        all_done = false;
+                        break;
+                    }
+                }
+
+                if all_done {
+                    campaign.status = CampaignStatus::Completed;
+
+                    let rep_addr = Self::get_rep_addr(&env);
+                    let rep_args: Vec<Val> = Vec::from_array(
+                        &env,
+                        [
+                            env.current_contract_address().into_val(&env),
+                            campaign.owner.clone().into_val(&env),
+                        ],
+                    );
+                    env.invoke_contract::<()>(
+                        &rep_addr,
+                        &sym(&env, "record_campaign_backed"),
+                        rep_args,
+                    );
+                }
+
+                env.storage().persistent().set(&key, &campaign);
+            }
+            DisputeResolution::ApproveBacker => {
+                // Resolve in favor of backer: reject milestone, cancel campaign for refunds
+                ms.status = CrowdfundMilestoneStatus::Rejected;
+                env.storage().persistent().set(&ms_key, &ms);
+
+                campaign.status = CampaignStatus::Cancelled;
+                campaign.refund_progress = 0;
+                env.storage().persistent().set(&key, &campaign);
+            }
+        }
+
+        DisputeResolved {
+            campaign_id,
+            milestone_id: milestone_index,
+            resolution,
+        }
+        .publish(&env);
+
+        Self::extend_instance_ttl(&env);
         Ok(())
     }
 
