@@ -5,7 +5,7 @@ use governance_voting::{GovernanceVoting, GovernanceVotingClient};
 use reputation_registry::{ReputationRegistry, ReputationRegistryClient};
 use soroban_sdk::testutils::{Address as _, Ledger};
 use soroban_sdk::token::{StellarAssetClient, TokenClient};
-use soroban_sdk::{Address, Env, String, Vec};
+use soroban_sdk::{Address, Env, Vec};
 
 #[allow(dead_code)]
 struct TestEnv<'a> {
@@ -74,26 +74,21 @@ fn setup() -> TestEnv<'static> {
     }
 }
 
-fn make_milestones(env: &Env) -> Vec<(String, u32)> {
+/// Two equal-weight milestones (50% / 50%).
+fn make_milestones(env: &Env) -> Vec<u32> {
     let mut ms = Vec::new(env);
-    ms.push_back((String::from_str(env, "MVP"), 5000u32));
-    ms.push_back((String::from_str(env, "Beta"), 5000u32));
+    ms.push_back(5000u32);
+    ms.push_back(5000u32);
     ms
 }
 
-/// Helper: advance a campaign from Draft → Submitted → Approved (with vote session) → vote → Campaigning
+/// Advance a campaign from Submitted → Approved (vote session) → Campaigning.
 fn advance_to_campaigning(t: &TestEnv, campaign_id: u64) {
-    // Owner submits for review
-    t.client.submit_for_review(&campaign_id);
-
-    // Admin approves (creates voting session with duration=1000, threshold=1)
+    // Admin approves (duration=1000 ledger seconds, threshold=1 vote)
     let _session_id = t.client.approve_campaign(&campaign_id, &1000, &1);
-
-    // A voter votes (option 0 = "Approve")
+    // A single voter approves (option 0 = "Approve")
     let voter = Address::generate(&t.env);
     t.client.vote_campaign(&voter, &campaign_id, &0);
-
-    // Check threshold → transitions to Campaigning
     t.client.check_vote_threshold(&campaign_id);
 }
 
@@ -104,18 +99,16 @@ fn test_create_campaign() {
 
     let cid = t.client.create_campaign(
         &owner,
-        &String::from_str(&t.env, "My Campaign"),
         &10000i128,
         &t.token_addr,
         &(t.env.ledger().timestamp() + 86400),
         &make_milestones(&t.env),
         &100i128,
-        &false,
     );
 
     assert_eq!(cid, 1);
     let campaign = t.client.get_campaign(&1);
-    assert_eq!(campaign.status, CampaignStatus::Draft);
+    assert_eq!(campaign.status, CampaignStatus::Submitted);
     assert_eq!(campaign.funding_goal, 10000);
     assert_eq!(campaign.milestone_count, 2);
 }
@@ -127,19 +120,13 @@ fn test_governance_flow() {
 
     let cid = t.client.create_campaign(
         &owner,
-        &String::from_str(&t.env, "Gov flow"),
         &10000i128,
         &t.token_addr,
         &(t.env.ledger().timestamp() + 86400),
         &make_milestones(&t.env),
         &100i128,
-        &false,
     );
 
-    assert_eq!(t.client.get_campaign(&cid).status, CampaignStatus::Draft);
-
-    // Submit for review
-    t.client.submit_for_review(&cid);
     assert_eq!(
         t.client.get_campaign(&cid).status,
         CampaignStatus::Submitted
@@ -172,37 +159,36 @@ fn test_reject_campaign() {
 
     let cid = t.client.create_campaign(
         &owner,
-        &String::from_str(&t.env, "Rejected"),
         &10000i128,
         &t.token_addr,
         &(t.env.ledger().timestamp() + 86400),
         &make_milestones(&t.env),
         &100i128,
-        &false,
     );
 
-    t.client.submit_for_review(&cid);
-    t.client
-        .reject_campaign(&cid, &String::from_str(&t.env, "Need more detail"));
-    assert_eq!(t.client.get_campaign(&cid).status, CampaignStatus::Draft);
+    // Rejection reason is stored in the backend DB, not on-chain.
+    t.client.reject_campaign(&cid);
+    assert_eq!(
+        t.client.get_campaign(&cid).status,
+        CampaignStatus::Cancelled
+    );
 }
 
 #[test]
-fn test_create_and_submit_campaign() {
+fn test_create_campaign_starts_submitted() {
     let t = setup();
     let owner = t.admin.clone();
 
     let cid = t.client.create_campaign(
         &owner,
-        &String::from_str(&t.env, "Instant Submit"),
         &10000i128,
         &t.token_addr,
         &(t.env.ledger().timestamp() + 86400),
         &make_milestones(&t.env),
         &100i128,
-        &true,
     );
 
+    // Campaigns start directly as Submitted — no draft step.
     assert_eq!(
         t.client.get_campaign(&cid).status,
         CampaignStatus::Submitted
@@ -216,23 +202,20 @@ fn test_update_campaign() {
 
     let cid = t.client.create_campaign(
         &owner,
-        &String::from_str(&t.env, "Draft"),
         &10000i128,
         &t.token_addr,
         &(t.env.ledger().timestamp() + 86400),
         &make_milestones(&t.env),
         &100i128,
-        &false,
     );
 
     let new_goal = 20000i128;
     let mut new_ms = Vec::new(&t.env);
-    new_ms.push_back((String::from_str(&t.env, "Phase 1"), 5000u32));
-    new_ms.push_back((String::from_str(&t.env, "Phase 2"), 5000u32));
+    new_ms.push_back(5000u32);
+    new_ms.push_back(5000u32);
 
     t.client.update_campaign(
         &cid,
-        &String::from_str(&t.env, "Updated"),
         &new_goal,
         &t.token_addr,
         &(t.env.ledger().timestamp() + 90000),
@@ -260,19 +243,16 @@ fn test_full_lifecycle() {
 
     let cid = t.client.create_campaign(
         &owner,
-        &String::from_str(&t.env, "Build a DAO"),
         &1000i128,
         &t.token_addr,
         &(t.env.ledger().timestamp() + 86400),
         &make_milestones(&t.env),
         &100i128,
-        &false,
     );
 
-    // Advance through governance flow
     advance_to_campaigning(&t, cid);
 
-    // Pledge enough to fund (fee-on-top: backers pay more than the pledge)
+    // Pledge enough to fund
     t.client.pledge(&donor1, &cid, &600);
     let campaign = t.client.get_campaign(&cid);
     assert_eq!(campaign.status, CampaignStatus::Campaigning);
@@ -310,16 +290,13 @@ fn test_failed_campaign_refund() {
 
     let cid = t.client.create_campaign(
         &owner,
-        &String::from_str(&t.env, "Underfunded"),
         &5000i128,
         &t.token_addr,
         &deadline,
         &make_milestones(&t.env),
         &100i128,
-        &false,
     );
 
-    // Advance through governance flow
     advance_to_campaigning(&t, cid);
 
     // Pledge but not enough to fund
@@ -337,8 +314,10 @@ fn test_failed_campaign_refund() {
     let campaign = t.client.get_campaign(&cid);
     assert_eq!(campaign.status, CampaignStatus::Failed);
 
-    // Process refund batch
-    t.client.process_refund_batch(&cid);
+    // Backend supplies the backer list; contract verifies stored amounts.
+    let mut backers = Vec::new(&t.env);
+    backers.push_back((donor.clone(), 0i128)); // hint amount ignored; contract uses stored pledge
+    t.client.process_refund_batch(&cid, &backers);
 
     // Donor got their pledge back
     assert_eq!(t.token.balance(&donor), balance_after_pledge + 500);
@@ -355,16 +334,13 @@ fn test_cancel_campaign() {
 
     let cid = t.client.create_campaign(
         &owner,
-        &String::from_str(&t.env, "Cancel me"),
         &10000i128,
         &t.token_addr,
         &(t.env.ledger().timestamp() + 86400),
         &make_milestones(&t.env),
         &100i128,
-        &false,
     );
 
-    // Advance through governance flow
     advance_to_campaigning(&t, cid);
 
     t.client.pledge(&donor, &cid, &200);
@@ -374,9 +350,11 @@ fn test_cancel_campaign() {
     let campaign = t.client.get_campaign(&cid);
     assert_eq!(campaign.status, CampaignStatus::Cancelled);
 
-    // Process refund
+    // Process refund — backend supplies backer list
     let balance_before = t.token.balance(&donor);
-    t.client.process_refund_batch(&cid);
+    let mut backers = Vec::new(&t.env);
+    backers.push_back((donor.clone(), 0i128));
+    t.client.process_refund_batch(&cid, &backers);
     assert_eq!(t.token.balance(&donor), balance_before + 200);
 }
 
@@ -391,16 +369,13 @@ fn test_reject_milestone() {
 
     let cid = t.client.create_campaign(
         &owner,
-        &String::from_str(&t.env, "With rejection"),
         &1000i128,
         &t.token_addr,
         &(t.env.ledger().timestamp() + 86400),
         &make_milestones(&t.env),
         &100i128,
-        &false,
     );
 
-    // Advance through governance flow
     advance_to_campaigning(&t, cid);
 
     t.client.pledge(&donor, &cid, &1100);
@@ -411,18 +386,12 @@ fn test_reject_milestone() {
     // Reject it
     t.client.reject_milestone(&cid, &0);
     let ms = t.client.get_milestone(&cid, &0);
-    assert_eq!(
-        ms.status,
-        crate::storage::CrowdfundMilestoneStatus::Rejected
-    );
+    assert_eq!(ms.status, CrowdfundMilestoneStatus::Rejected);
 
     // Can resubmit after rejection
     t.client.submit_milestone(&cid, &0);
     let ms = t.client.get_milestone(&cid, &0);
-    assert_eq!(
-        ms.status,
-        crate::storage::CrowdfundMilestoneStatus::Submitted
-    );
+    assert_eq!(ms.status, CrowdfundMilestoneStatus::Submitted);
 }
 
 #[test]
@@ -432,18 +401,16 @@ fn test_invalid_milestones_rejected() {
 
     // Milestones that don't sum to 10000
     let mut bad_ms = Vec::new(&t.env);
-    bad_ms.push_back((String::from_str(&t.env, "A"), 3000u32));
-    bad_ms.push_back((String::from_str(&t.env, "B"), 3000u32));
+    bad_ms.push_back(3000u32);
+    bad_ms.push_back(3000u32);
 
     let result = t.client.try_create_campaign(
         &owner,
-        &String::from_str(&t.env, "Bad"),
         &1000i128,
         &t.token_addr,
         &(t.env.ledger().timestamp() + 86400),
         &bad_ms,
         &100i128,
-        &false,
     );
     assert!(result.is_err());
 }
@@ -459,13 +426,11 @@ fn test_resolve_dispute_approve_creator() {
 
     let cid = t.client.create_campaign(
         &owner,
-        &String::from_str(&t.env, "Dispute Creator Win"),
         &1000i128,
         &t.token_addr,
         &(t.env.ledger().timestamp() + 86400),
         &make_milestones(&t.env),
         &100i128,
-        &false,
     );
 
     advance_to_campaigning(&t, cid);
@@ -520,13 +485,11 @@ fn test_resolve_dispute_approve_backer() {
 
     let cid = t.client.create_campaign(
         &owner,
-        &String::from_str(&t.env, "Dispute Backer Win"),
         &1000i128,
         &t.token_addr,
         &(t.env.ledger().timestamp() + 86400),
         &make_milestones(&t.env),
         &100i128,
-        &false,
     );
 
     advance_to_campaigning(&t, cid);
@@ -539,7 +502,6 @@ fn test_resolve_dispute_approve_backer() {
     t.client.dispute_milestone(&donor, &cid, &0);
 
     // Admin resolves in favor of backer → milestone rejected, campaign cancelled
-    let balance_before_refund = t.token.balance(&donor);
     t.client
         .resolve_dispute(&cid, &0, &DisputeResolution::ApproveBacker);
 
@@ -549,8 +511,11 @@ fn test_resolve_dispute_approve_backer() {
     let campaign = t.client.get_campaign(&cid);
     assert_eq!(campaign.status, CampaignStatus::Cancelled);
 
-    // Backers can now get refunds
-    t.client.process_refund_batch(&cid);
+    // Backend supplies backer list for refund processing
+    let balance_before_refund = t.token.balance(&donor);
+    let mut backers = Vec::new(&t.env);
+    backers.push_back((donor.clone(), 0i128));
+    t.client.process_refund_batch(&cid, &backers);
     assert!(t.token.balance(&donor) > balance_before_refund);
 }
 
@@ -565,13 +530,11 @@ fn test_resolve_dispute_not_disputed_fails() {
 
     let cid = t.client.create_campaign(
         &owner,
-        &String::from_str(&t.env, "Not disputed"),
         &1000i128,
         &t.token_addr,
         &(t.env.ledger().timestamp() + 86400),
         &make_milestones(&t.env),
         &100i128,
-        &false,
     );
 
     advance_to_campaigning(&t, cid);
@@ -586,22 +549,18 @@ fn test_resolve_dispute_not_disputed_fails() {
 }
 
 #[test]
-fn test_vote_reject_returns_to_draft() {
+fn test_vote_reject_cancels_campaign() {
     let t = setup();
     let owner = t.admin.clone();
 
     let cid = t.client.create_campaign(
         &owner,
-        &String::from_str(&t.env, "Vote reject"),
         &10000i128,
         &t.token_addr,
         &(t.env.ledger().timestamp() + 86400),
         &make_milestones(&t.env),
         &100i128,
-        &false,
     );
-
-    t.client.submit_for_review(&cid);
 
     // Admin approves → creates vote session (threshold=1)
     t.client.approve_campaign(&cid, &1000, &1);
@@ -614,31 +573,27 @@ fn test_vote_reject_returns_to_draft() {
     let voter = Address::generate(&t.env);
     t.client.vote_campaign(&voter, &cid, &1);
 
-    // Check threshold → should reject back to Draft
+    // Check threshold → community rejected, campaign cancelled
     t.client.check_vote_threshold(&cid);
 
     let campaign = t.client.get_campaign(&cid);
-    assert_eq!(campaign.status, CampaignStatus::Draft);
+    assert_eq!(campaign.status, CampaignStatus::Cancelled);
     assert!(campaign.vote_session_id.is_none());
 }
 
 #[test]
-fn test_vote_expired_without_quorum_returns_to_draft() {
+fn test_vote_expired_without_quorum_cancels_campaign() {
     let t = setup();
     let owner = t.admin.clone();
 
     let cid = t.client.create_campaign(
         &owner,
-        &String::from_str(&t.env, "Vote expire"),
         &10000i128,
         &t.token_addr,
         &(t.env.ledger().timestamp() + 86400),
         &make_milestones(&t.env),
         &100i128,
-        &false,
     );
-
-    t.client.submit_for_review(&cid);
 
     // Admin approves → creates vote session (threshold=5, duration=1000)
     t.client.approve_campaign(&cid, &1000, &5);
@@ -656,11 +611,11 @@ fn test_vote_expired_without_quorum_returns_to_draft() {
         l.timestamp += 1001;
     });
 
-    // Check threshold → voting expired, should reject back to Draft
+    // Check threshold → voting expired without quorum, campaign cancelled
     t.client.check_vote_threshold(&cid);
 
     let campaign = t.client.get_campaign(&cid);
-    assert_eq!(campaign.status, CampaignStatus::Draft);
+    assert_eq!(campaign.status, CampaignStatus::Cancelled);
     assert!(campaign.vote_session_id.is_none());
 }
 
@@ -671,16 +626,13 @@ fn test_vote_threshold_not_met_while_active() {
 
     let cid = t.client.create_campaign(
         &owner,
-        &String::from_str(&t.env, "Still voting"),
         &10000i128,
         &t.token_addr,
         &(t.env.ledger().timestamp() + 86400),
         &make_milestones(&t.env),
         &100i128,
-        &false,
     );
 
-    t.client.submit_for_review(&cid);
     t.client.approve_campaign(&cid, &1000, &5);
 
     // No votes yet, voting still active → should error
@@ -707,13 +659,11 @@ fn test_overdue_flag_and_escalate() {
 
     let cid = t.client.create_campaign(
         &owner,
-        &String::from_str(&t.env, "Overdue escalation"),
         &1000i128,
         &t.token_addr,
         &deadline,
         &make_milestones(&t.env),
         &100i128,
-        &false,
     );
 
     advance_to_campaigning(&t, cid);
@@ -749,9 +699,11 @@ fn test_overdue_flag_and_escalate() {
     let campaign = t.client.get_campaign(&cid);
     assert_eq!(campaign.status, CampaignStatus::Cancelled);
 
-    // Backers can get refunds
+    // Backend supplies backer list for refund
     let balance_before = t.token.balance(&donor);
-    t.client.process_refund_batch(&cid);
+    let mut backers = Vec::new(&t.env);
+    backers.push_back((donor.clone(), 0i128));
+    t.client.process_refund_batch(&cid, &backers);
     assert!(t.token.balance(&donor) > balance_before);
 }
 
@@ -768,13 +720,11 @@ fn test_overdue_escalate_not_flagged_fails() {
 
     let cid = t.client.create_campaign(
         &owner,
-        &String::from_str(&t.env, "Not flagged"),
         &1000i128,
         &t.token_addr,
         &deadline,
         &make_milestones(&t.env),
         &100i128,
-        &false,
     );
 
     advance_to_campaigning(&t, cid);
@@ -802,13 +752,11 @@ fn test_overdue_creator_submits_during_grace_period() {
 
     let cid = t.client.create_campaign(
         &owner,
-        &String::from_str(&t.env, "Grace period save"),
         &1000i128,
         &t.token_addr,
         &deadline,
         &make_milestones(&t.env),
         &100i128,
-        &false,
     );
 
     advance_to_campaigning(&t, cid);
@@ -842,22 +790,23 @@ fn test_overdue_creator_submits_during_grace_period() {
 }
 
 #[test]
-fn test_owner_cancel_in_draft() {
+fn test_owner_cancel_in_submitted() {
     let t = setup();
     let owner = Address::generate(&t.env);
 
     let cid = t.client.create_campaign(
         &owner,
-        &String::from_str(&t.env, "Owner cancel draft"),
         &10000i128,
         &t.token_addr,
         &(t.env.ledger().timestamp() + 86400),
         &make_milestones(&t.env),
         &100i128,
-        &false,
     );
 
-    assert_eq!(t.client.get_campaign(&cid).status, CampaignStatus::Draft);
+    assert_eq!(
+        t.client.get_campaign(&cid).status,
+        CampaignStatus::Submitted
+    );
 
     t.client.owner_cancel_campaign(&cid);
     assert_eq!(
@@ -877,13 +826,11 @@ fn test_owner_cancel_in_campaigning_with_refunds() {
 
     let cid = t.client.create_campaign(
         &owner,
-        &String::from_str(&t.env, "Owner cancel campaigning"),
         &10000i128,
         &t.token_addr,
         &(t.env.ledger().timestamp() + 86400),
         &make_milestones(&t.env),
         &100i128,
-        &false,
     );
 
     advance_to_campaigning(&t, cid);
@@ -899,8 +846,10 @@ fn test_owner_cancel_in_campaigning_with_refunds() {
         CampaignStatus::Cancelled
     );
 
-    // Refunds work
-    t.client.process_refund_batch(&cid);
+    // Refunds work — backend provides backer list
+    let mut backers = Vec::new(&t.env);
+    backers.push_back((donor.clone(), 0i128));
+    t.client.process_refund_batch(&cid, &backers);
     assert_eq!(t.token.balance(&donor), balance_after_pledge + 500);
 }
 
@@ -915,13 +864,11 @@ fn test_owner_cancel_after_funded_fails() {
 
     let cid = t.client.create_campaign(
         &owner,
-        &String::from_str(&t.env, "Owner cancel funded"),
         &1000i128,
         &t.token_addr,
         &(t.env.ledger().timestamp() + 86400),
         &make_milestones(&t.env),
         &100i128,
-        &false,
     );
 
     advance_to_campaigning(&t, cid);

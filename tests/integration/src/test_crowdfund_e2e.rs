@@ -4,12 +4,12 @@
 use crate::setup::{setup_platform, Platform};
 use crowdfund_registry::storage::CampaignStatus;
 use soroban_sdk::testutils::{Address as _, Ledger};
-use soroban_sdk::{Address, String, Vec};
+use soroban_sdk::{Address, Vec};
 
-fn make_milestones(env: &soroban_sdk::Env) -> Vec<(String, u32)> {
+fn make_milestones(env: &soroban_sdk::Env) -> Vec<u32> {
     let mut ms = Vec::new(env);
-    ms.push_back((String::from_str(env, "MVP"), 5000u32));
-    ms.push_back((String::from_str(env, "Beta"), 5000u32));
+    ms.push_back(5000u32);
+    ms.push_back(5000u32);
     ms
 }
 
@@ -34,13 +34,11 @@ fn test_campaign_full_success_lifecycle() {
 
     let cid = p.crowdfund.create_campaign(
         &owner,
-        &String::from_str(&p.env, "Build a DAO tool"),
         &5_000i128,
         &p.token_addr,
         &(p.env.ledger().timestamp() + 86400),
         &make_milestones(&p.env),
         &100i128,
-        &false,
     );
 
     let campaign = p.crowdfund.get_campaign(&cid);
@@ -94,13 +92,11 @@ fn test_campaign_failure_with_batched_refund() {
 
     let cid = p.crowdfund.create_campaign(
         &owner,
-        &String::from_str(&p.env, "Underfunded project"),
         &50_000i128,
         &p.token_addr,
         &deadline,
         &make_milestones(&p.env),
         &100i128,
-        &false,
     );
 
     // Advance through governance flow
@@ -123,7 +119,9 @@ fn test_campaign_failure_with_batched_refund() {
     );
 
     // Process refund batch (permissionless)
-    p.crowdfund.process_refund_batch(&cid);
+    let mut backers = Vec::new(&p.env);
+    backers.push_back((backer.clone(), 0i128));
+    p.crowdfund.process_refund_batch(&cid, &backers);
 
     // Backer got their pledge back
     assert_eq!(
@@ -142,13 +140,11 @@ fn test_campaign_cancel_with_refund() {
 
     let cid = p.crowdfund.create_campaign(
         &owner,
-        &String::from_str(&p.env, "Cancelled project"),
         &10_000i128,
         &p.token_addr,
         &(p.env.ledger().timestamp() + 86400),
         &make_milestones(&p.env),
         &50i128,
-        &false,
     );
 
     // Advance through governance flow
@@ -165,7 +161,9 @@ fn test_campaign_cancel_with_refund() {
     );
 
     // Process refund
-    p.crowdfund.process_refund_batch(&cid);
+    let mut backers = Vec::new(&p.env);
+    backers.push_back((backer.clone(), 0i128));
+    p.crowdfund.process_refund_batch(&cid, &backers);
     assert_eq!(p.token.balance(&backer), backer_balance + 500);
 }
 
@@ -179,13 +177,11 @@ fn test_milestone_rejection_and_resubmit() {
 
     let cid = p.crowdfund.create_campaign(
         &owner,
-        &String::from_str(&p.env, "Milestone revisions"),
         &2_000i128,
         &p.token_addr,
         &(p.env.ledger().timestamp() + 86400),
         &make_milestones(&p.env),
         &100i128,
-        &false,
     );
 
     // Advance through governance flow
@@ -237,13 +233,11 @@ fn test_pledge_fee_routing() {
 
     let cid = p.crowdfund.create_campaign(
         &owner,
-        &String::from_str(&p.env, "Fee routing test"),
         &5_000i128,
         &p.token_addr,
         &(p.env.ledger().timestamp() + 86400),
         &make_milestones(&p.env),
         &100i128,
-        &false,
     );
 
     // Advance through governance flow
@@ -270,13 +264,11 @@ fn test_governance_approval_flow() {
 
     let cid = p.crowdfund.create_campaign(
         &owner,
-        &String::from_str(&p.env, "Governance test"),
         &5_000i128,
         &p.token_addr,
         &(p.env.ledger().timestamp() + 86400),
         &make_milestones(&p.env),
         &100i128,
-        &false,
     );
 
     // Starts in Draft
@@ -316,20 +308,17 @@ fn test_governance_rejection_flow() {
 
     let cid = p.crowdfund.create_campaign(
         &owner,
-        &String::from_str(&p.env, "Rejected campaign"),
         &5_000i128,
         &p.token_addr,
         &(p.env.ledger().timestamp() + 86400),
         &make_milestones(&p.env),
         &100i128,
-        &false,
     );
 
     p.crowdfund.submit_for_review(&cid);
 
     // Admin rejects → back to Draft
-    p.crowdfund
-        .reject_campaign(&cid, &String::from_str(&p.env, "Needs more detail"));
+    p.crowdfund.reject_campaign(&cid);
     assert_eq!(p.crowdfund.get_campaign(&cid).status, CampaignStatus::Draft);
 
     // Owner can resubmit

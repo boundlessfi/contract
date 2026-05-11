@@ -52,6 +52,21 @@ pub struct SponsoredTrack {
     pub pool_id: BytesN<32>,
 }
 
+/// Per-winner record created at finalize time. Winners pull their prize via
+/// `claim_prize`. After `claim_deadline` passes, the creator may reclaim
+/// unclaimed amounts via `reclaim_unclaimed_prizes`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WinnerRecord {
+    pub hackathon_id: u64,
+    pub rank: u32,
+    pub winner: Address,
+    pub amount: i128,
+    pub claimed: bool,
+    pub claimed_at: Option<u64>,
+    pub claim_deadline: u64,
+}
+
 #[contracttype]
 #[derive(Clone)]
 pub enum HackathonDataKey {
@@ -68,4 +83,9 @@ pub enum HackathonDataKey {
     PrizeTier(u64, u32),
     HackathonTrack(u64, u32),
     HackathonTrackCount(u64),
+    // Pull-model winnings
+    Winner(u64, u32),              // (hackathon_id, rank) -> WinnerRecord
+    WinnerByAddress(u64, Address), // (hackathon_id, address) -> u32 rank
+    WinnerCount(u64),              // (hackathon_id) -> u32 winner count recorded at finalize
+    ClaimWindow,                   // u64 seconds; admin-configurable, default = 90 days
 }

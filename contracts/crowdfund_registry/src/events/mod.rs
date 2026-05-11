@@ -1,5 +1,5 @@
-use crate::storage::DisputeResolution;
-use soroban_sdk::{contractevent, Address, BytesN, String};
+use crate::storage::{DisputeResolution, VoteRejectionReason};
+use soroban_sdk::{contractevent, Address, BytesN};
 
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -72,12 +72,14 @@ pub struct CampaignCancelledByOwner {
     pub id: u64,
 }
 
+/// Emitted after each `process_refund_batch` call.
+/// `count` is the number of backers refunded in this call.
+/// The backend tracks batch progress; no batch_index is stored on-chain.
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RefundBatchProcessed {
     #[topic]
     pub campaign_id: u64,
-    pub batch_index: u32,
     pub count: u32,
 }
 
@@ -128,12 +130,13 @@ pub struct CampaignApproved {
     pub vote_session_id: BytesN<32>,
 }
 
+/// Emitted when an admin explicitly rejects a campaign before the vote stage.
+/// The rejection reason is stored in the backend database, not on-chain.
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CampaignRejected {
     #[topic]
     pub id: u64,
-    pub reason: String,
 }
 
 #[contractevent]
@@ -159,12 +162,15 @@ pub struct MilestoneRevisionRequested {
     pub milestone_id: u32,
 }
 
+/// Emitted when a community vote results in campaign rejection.
+/// `reason` distinguishes the two rejection paths so the indexer
+/// does not need to parse strings.
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CampaignVoteRejected {
     #[topic]
     pub id: u64,
-    pub reason: String,
+    pub reason: VoteRejectionReason,
 }
 
 #[contractevent]

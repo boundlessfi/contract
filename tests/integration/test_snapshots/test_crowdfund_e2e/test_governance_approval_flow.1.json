@@ -439,9 +439,6 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA2ZMN"
                 },
                 {
-                  "string": "Governance test"
-                },
-                {
                   "i128": "5000"
                 },
                 {
@@ -453,32 +450,15 @@
                 {
                   "vec": [
                     {
-                      "vec": [
-                        {
-                          "string": "MVP"
-                        },
-                        {
-                          "u32": 5000
-                        }
-                      ]
+                      "u32": 5000
                     },
                     {
-                      "vec": [
-                        {
-                          "string": "Beta"
-                        },
-                        {
-                          "u32": 5000
-                        }
-                      ]
+                      "u32": 5000
                     }
                   ]
                 },
                 {
                   "i128": "100"
-                },
-                {
-                  "bool": false
                 }
               ]
             }
@@ -2102,14 +2082,6 @@
                   },
                   {
                     "key": {
-                      "symbol": "metadata_cid"
-                    },
-                    "val": {
-                      "string": "Governance test"
-                    }
-                  },
-                  {
-                    "key": {
                       "symbol": "milestone_count"
                     },
                     "val": {
@@ -2138,14 +2110,6 @@
                     },
                     "val": {
                       "bytes": "f83f60940c1ec44c0f1e90f694c6cae7c99b4b6d1507d60ad5a3282a7750d0ee"
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "refund_progress"
-                    },
-                    "val": {
-                      "u32": 0
                     }
                   },
                   {
@@ -2199,14 +2163,6 @@
               "durability": "persistent",
               "val": {
                 "map": [
-                  {
-                    "key": {
-                      "symbol": "description"
-                    },
-                    "val": {
-                      "string": "MVP"
-                    }
-                  },
                   {
                     "key": {
                       "symbol": "flagged_at"
@@ -2274,14 +2230,6 @@
               "durability": "persistent",
               "val": {
                 "map": [
-                  {
-                    "key": {
-                      "symbol": "description"
-                    },
-                    "val": {
-                      "string": "Beta"
-                    }
-                  },
                   {
                     "key": {
                       "symbol": "flagged_at"

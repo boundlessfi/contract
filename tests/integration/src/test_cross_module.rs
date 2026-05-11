@@ -61,21 +61,19 @@ fn test_single_contributor_across_all_modules() {
     // =========================================
     p.sac.mint(&contributor, &10_000);
 
-    let mut milestones = Vec::new(&p.env);
-    milestones.push_back((String::from_str(&p.env, "Phase 1"), 5000u32));
-    milestones.push_back((String::from_str(&p.env, "Phase 2"), 5000u32));
+    let mut milestones: Vec<u32> = Vec::new(&p.env);
+    milestones.push_back(5000u32);
+    milestones.push_back(5000u32);
 
     let campaign_owner = Address::generate(&p.env);
 
     let cid = p.crowdfund.create_campaign(
         &campaign_owner,
-        &String::from_str(&p.env, "Cross-module campaign"),
         &2_000i128,
         &p.token_addr,
         &(p.env.ledger().timestamp() + 86400),
         &milestones,
         &100i128,
-        &false,
     );
 
     advance_to_campaigning(&p, cid);
@@ -165,19 +163,17 @@ fn test_platform_fee_accounting_via_pledges() {
     let campaign_owner = Address::generate(&p.env);
     p.sac.mint(&backer, &100_000);
 
-    let mut milestones = Vec::new(&p.env);
-    milestones.push_back((String::from_str(&p.env, "M1"), 5000u32));
-    milestones.push_back((String::from_str(&p.env, "M2"), 5000u32));
+    let mut milestones: Vec<u32> = Vec::new(&p.env);
+    milestones.push_back(5000u32);
+    milestones.push_back(5000u32);
 
     let cid = p.crowdfund.create_campaign(
         &campaign_owner,
-        &String::from_str(&p.env, "Fee accounting"),
         &50_000i128,
         &p.token_addr,
         &(p.env.ledger().timestamp() + 86400),
         &milestones,
         &100i128,
-        &false,
     );
 
     advance_to_campaigning(&p, cid);

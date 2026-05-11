@@ -202,10 +202,10 @@ fn test_project_deposit_calculate_by_level() {
 // CROWDFUND: dispute_milestone, terminate_campaign, flag_overdue_milestone
 // ============================================================================
 
-fn make_milestones(env: &soroban_sdk::Env) -> Vec<(String, u32)> {
+fn make_milestones(env: &soroban_sdk::Env) -> Vec<u32> {
     let mut ms = Vec::new(env);
-    ms.push_back((String::from_str(env, "MVP"), 5000u32));
-    ms.push_back((String::from_str(env, "Beta"), 5000u32));
+    ms.push_back(5000u32);
+    ms.push_back(5000u32);
     ms
 }
 
@@ -227,13 +227,11 @@ fn test_dispute_milestone() {
 
     let cid = p.crowdfund.create_campaign(
         &owner,
-        &String::from_str(&p.env, "Disputable"),
         &2_000i128,
         &p.token_addr,
         &(p.env.ledger().timestamp() + 86400),
         &make_milestones(&p.env),
         &100i128,
-        &false,
     );
 
     advance_to_campaigning(&p, cid);
@@ -271,13 +269,11 @@ fn test_dispute_milestone_non_backer_rejected() {
 
     let cid = p.crowdfund.create_campaign(
         &owner,
-        &String::from_str(&p.env, "No dispute"),
         &2_000i128,
         &p.token_addr,
         &(p.env.ledger().timestamp() + 86400),
         &make_milestones(&p.env),
         &100i128,
-        &false,
     );
 
     advance_to_campaigning(&p, cid);
@@ -298,13 +294,11 @@ fn test_terminate_campaign() {
 
     let cid = p.crowdfund.create_campaign(
         &owner,
-        &String::from_str(&p.env, "Terminatable"),
         &10_000i128,
         &p.token_addr,
         &(p.env.ledger().timestamp() + 86400),
         &make_milestones(&p.env),
         &100i128,
-        &false,
     );
 
     advance_to_campaigning(&p, cid);
@@ -320,7 +314,9 @@ fn test_terminate_campaign() {
     );
 
     // Refund backer
-    p.crowdfund.process_refund_batch(&cid);
+    let mut backers = Vec::new(&p.env);
+    backers.push_back((backer.clone(), 0i128));
+    p.crowdfund.process_refund_batch(&cid, &backers);
     assert_eq!(p.token.balance(&backer), backer_balance + 1_000);
 }
 
@@ -335,13 +331,11 @@ fn test_flag_overdue_milestone() {
 
     let cid = p.crowdfund.create_campaign(
         &owner,
-        &String::from_str(&p.env, "Overdue"),
         &2_000i128,
         &p.token_addr,
         &deadline,
         &make_milestones(&p.env),
         &100i128,
-        &false,
     );
 
     advance_to_campaigning(&p, cid);
@@ -374,13 +368,11 @@ fn test_flag_overdue_too_early() {
 
     let cid = p.crowdfund.create_campaign(
         &owner,
-        &String::from_str(&p.env, "Not overdue"),
         &2_000i128,
         &p.token_addr,
         &deadline,
         &make_milestones(&p.env),
         &100i128,
-        &false,
     );
 
     advance_to_campaigning(&p, cid);

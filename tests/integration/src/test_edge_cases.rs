@@ -12,10 +12,10 @@ use soroban_sdk::{Address, String, Vec};
 // HELPERS
 // ============================================================================
 
-fn make_milestones(env: &soroban_sdk::Env) -> Vec<(String, u32)> {
+fn make_milestones(env: &soroban_sdk::Env) -> Vec<u32> {
     let mut ms = Vec::new(env);
-    ms.push_back((String::from_str(env, "MVP"), 5000u32));
-    ms.push_back((String::from_str(env, "Beta"), 5000u32));
+    ms.push_back(5000u32);
+    ms.push_back(5000u32);
     ms
 }
 
@@ -40,13 +40,11 @@ fn test_request_milestone_revision() {
 
     let cid = p.crowdfund.create_campaign(
         &owner,
-        &String::from_str(&p.env, "Revision test"),
         &2_000i128,
         &p.token_addr,
         &(p.env.ledger().timestamp() + 86400),
         &make_milestones(&p.env),
         &100i128,
-        &false,
     );
 
     advance_to_campaigning(&p, cid);
@@ -98,13 +96,11 @@ fn test_revision_on_disputed_milestone() {
 
     let cid = p.crowdfund.create_campaign(
         &owner,
-        &String::from_str(&p.env, "Disputed revision"),
         &2_000i128,
         &p.token_addr,
         &(p.env.ledger().timestamp() + 86400),
         &make_milestones(&p.env),
         &100i128,
-        &false,
     );
 
     advance_to_campaigning(&p, cid);
@@ -138,13 +134,11 @@ fn test_double_pledge_accumulates() {
 
     let cid = p.crowdfund.create_campaign(
         &owner,
-        &String::from_str(&p.env, "Double pledge"),
         &5_000i128,
         &p.token_addr,
         &(p.env.ledger().timestamp() + 86400),
         &make_milestones(&p.env),
         &100i128,
-        &false,
     );
 
     advance_to_campaigning(&p, cid);
@@ -175,13 +169,11 @@ fn test_governance_double_vote_rejected() {
 
     let cid = p.crowdfund.create_campaign(
         &owner,
-        &String::from_str(&p.env, "Double vote test"),
         &5_000i128,
         &p.token_addr,
         &(p.env.ledger().timestamp() + 86400),
         &make_milestones(&p.env),
         &100i128,
-        &false,
     );
 
     p.crowdfund.submit_for_review(&cid);
@@ -208,13 +200,11 @@ fn test_pledge_below_minimum_rejected() {
 
     let cid = p.crowdfund.create_campaign(
         &owner,
-        &String::from_str(&p.env, "Min pledge test"),
         &5_000i128,
         &p.token_addr,
         &(p.env.ledger().timestamp() + 86400),
         &make_milestones(&p.env),
         &500i128, // min pledge = 500
-        &false,
     );
 
     advance_to_campaigning(&p, cid);
@@ -353,13 +343,11 @@ fn test_pledge_in_draft_rejected() {
 
     let cid = p.crowdfund.create_campaign(
         &owner,
-        &String::from_str(&p.env, "Draft pledge attempt"),
         &5_000i128,
         &p.token_addr,
         &(p.env.ledger().timestamp() + 86400),
         &make_milestones(&p.env),
         &100i128,
-        &false,
     );
 
     // Campaign is in Draft — pledge should fail

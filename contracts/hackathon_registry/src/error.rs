@@ -33,4 +33,11 @@ pub enum HackathonError {
     InvalidTrackStatus = 1027,
     Overflow = 1028,
     SubmissionPeriodNotEnded = 1029,
+    // Pull-model claims
+    HackathonNotFinalized = 1030,
+    NotAWinner = 1031,
+    AlreadyClaimed = 1032,
+    ClaimWindowExpired = 1033,
+    ClaimWindowNotExpired = 1034,
+    InvalidClaimWindow = 1035,
 }

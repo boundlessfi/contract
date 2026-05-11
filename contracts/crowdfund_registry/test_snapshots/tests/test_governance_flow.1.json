@@ -208,9 +208,6 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
                 },
                 {
-                  "string": "Gov flow"
-                },
-                {
                   "i128": "10000"
                 },
                 {
@@ -222,32 +219,15 @@
                 {
                   "vec": [
                     {
-                      "vec": [
-                        {
-                          "string": "MVP"
-                        },
-                        {
-                          "u32": 5000
-                        }
-                      ]
+                      "u32": 5000
                     },
                     {
-                      "vec": [
-                        {
-                          "string": "Beta"
-                        },
-                        {
-                          "u32": 5000
-                        }
-                      ]
+                      "u32": 5000
                     }
                   ]
                 },
                 {
                   "i128": "100"
-                },
-                {
-                  "bool": false
                 }
               ]
             }
@@ -290,26 +270,6 @@
               "sub_invocations": []
             }
           ]
-        }
-      ]
-    ],
-    [],
-    [
-      [
-        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-        {
-          "function": {
-            "contract_fn": {
-              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARQG5",
-              "function_name": "submit_for_review",
-              "args": [
-                {
-                  "u64": "1"
-                }
-              ]
-            }
-          },
-          "sub_invocations": []
         }
       ]
     ],
@@ -511,26 +471,6 @@
               "key": {
                 "ledger_key_nonce": {
                   "nonce": "2032731177588607455"
-                }
-              },
-              "durability": "temporary",
-              "val": "void"
-            }
-          },
-          "ext": "v0"
-        },
-        "live_until": 6311999
-      },
-      {
-        "entry": {
-          "last_modified_ledger_seq": 0,
-          "data": {
-            "contract_data": {
-              "ext": "v0",
-              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-              "key": {
-                "ledger_key_nonce": {
-                  "nonce": "3126073502131104533"
                 }
               },
               "durability": "temporary",
@@ -1451,14 +1391,6 @@
                   },
                   {
                     "key": {
-                      "symbol": "metadata_cid"
-                    },
-                    "val": {
-                      "string": "Gov flow"
-                    }
-                  },
-                  {
-                    "key": {
                       "symbol": "milestone_count"
                     },
                     "val": {
@@ -1487,14 +1419,6 @@
                     },
                     "val": {
                       "bytes": "f83f60940c1ec44c0f1e90f694c6cae7c99b4b6d1507d60ad5a3282a7750d0ee"
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "refund_progress"
-                    },
-                    "val": {
-                      "u32": 0
                     }
                   },
                   {
@@ -1548,14 +1472,6 @@
               "durability": "persistent",
               "val": {
                 "map": [
-                  {
-                    "key": {
-                      "symbol": "description"
-                    },
-                    "val": {
-                      "string": "MVP"
-                    }
-                  },
                   {
                     "key": {
                       "symbol": "flagged_at"
@@ -1623,14 +1539,6 @@
               "durability": "persistent",
               "val": {
                 "map": [
-                  {
-                    "key": {
-                      "symbol": "description"
-                    },
-                    "val": {
-                      "string": "Beta"
-                    }
-                  },
                   {
                     "key": {
                       "symbol": "flagged_at"
@@ -1768,7 +1676,7 @@
               "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON",
               "key": {
                 "ledger_key_nonce": {
-                  "nonce": "1301173170172112462"
+                  "nonce": "3126073502131104533"
                 }
               },
               "durability": "temporary",

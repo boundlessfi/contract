@@ -176,10 +176,10 @@ fn test_full_lifecycle() {
     assert_eq!(sub2.total_score, 130); // 70 + 60
     assert_eq!(sub2.score_count, 2);
 
-    // Finalize (after judging deadline)
+    // Finalize (after judging deadline). With the pull model, finalize only
+    // records winners — no token transfers happen here.
     t.env.ledger().set_timestamp(3500);
 
-    let _creator_balance_before = t.token.balance(&creator);
     let lead1_balance_before = t.token.balance(&lead1);
     let lead2_balance_before = t.token.balance(&lead2);
 
@@ -189,16 +189,39 @@ fn test_full_lifecycle() {
     let hackathon = t.client.get_hackathon(&hid);
     assert_eq!(hackathon.status, HackathonStatus::Completed);
 
-    // Verify prize distribution
-    // lead1 gets 60% of 10000 = 6000
-    // lead2 gets 40% of 10000 = 4000
+    // Balances should NOT have changed yet
+    assert_eq!(t.token.balance(&lead1), lead1_balance_before);
+    assert_eq!(t.token.balance(&lead2), lead2_balance_before);
+
+    // Winner records exist with the correct amounts
+    let w1 = t.client.get_winner_by_address(&hid, &lead1);
+    assert_eq!(w1.rank, 0);
+    assert_eq!(w1.amount, 6000); // 60% of 10000
+    assert!(!w1.claimed);
+
+    let w2 = t.client.get_winner_by_address(&hid, &lead2);
+    assert_eq!(w2.rank, 1);
+    assert_eq!(w2.amount, 4000); // 40% of 10000
+    assert!(!w2.claimed);
+
+    assert_eq!(t.client.get_winner_count(&hid), 2);
+
+    // Winners pull their prizes
+    let claimed1 = t.client.claim_prize(&hid, &lead1);
+    let claimed2 = t.client.claim_prize(&hid, &lead2);
+    assert_eq!(claimed1, 6000);
+    assert_eq!(claimed2, 4000);
+
     let lead1_balance_after = t.token.balance(&lead1);
     let lead2_balance_after = t.token.balance(&lead2);
-
     assert_eq!(lead1_balance_after - lead1_balance_before, 6000);
     assert_eq!(lead2_balance_after - lead2_balance_before, 4000);
 
-    // Verify reputation was recorded
+    // Re-claim should fail
+    let result = t.client.try_claim_prize(&hid, &lead1);
+    assert!(result.is_err(), "second claim should fail with AlreadyClaimed");
+
+    // Verify reputation was recorded (unchanged behavior — happens at finalize)
     let profile1 = t.rep_client.get_profile(&lead1);
     assert!(profile1.hackathons_entered >= 1);
     assert!(profile1.hackathons_won >= 1);
@@ -207,6 +230,138 @@ fn test_full_lifecycle() {
     let profile2 = t.rep_client.get_profile(&lead2);
     assert!(profile2.hackathons_entered >= 1);
     assert_eq!(profile2.hackathons_won, 0);
+}
+
+/// Verifies the reclaim path: a winner who never claims forfeits their prize
+/// after the claim window expires, and the creator can sweep it back.
+#[test]
+fn test_reclaim_unclaimed_prizes() {
+    let t = setup();
+    let creator = t.admin.clone();
+
+    let mut prize_tiers = Vec::new(&t.env);
+    prize_tiers.push_back(10000u32); // 100% to top
+
+    let hid = t.client.create_hackathon(
+        &creator,
+        &String::from_str(&t.env, "Reclaim Test"),
+        &String::from_str(&t.env, "QmReclaim"),
+        &10_000,
+        &t.token_addr,
+        &1000,
+        &2000,
+        &3000,
+        &50,
+        &prize_tiers,
+    );
+
+    let judge = Address::generate(&t.env);
+    t.client.add_judge(&hid, &judge);
+
+    let lead1 = Address::generate(&t.env);
+    t.rep_client.init_profile(&lead1);
+
+    t.env.ledger().set_timestamp(500);
+    t.client.register_team(&hid, &lead1);
+
+    t.env.ledger().set_timestamp(1500);
+    t.client.submit_project(&hid, &lead1, &String::from_str(&t.env, "ipfs://r"));
+
+    t.env.ledger().set_timestamp(2500);
+    t.client.open_judging(&hid);
+    t.client.score_submission(&hid, &judge, &lead1, &95);
+
+    // Finalize. lead1 has a claimable prize but does not claim.
+    t.env.ledger().set_timestamp(3500);
+    let creator_balance_before = t.token.balance(&creator);
+    let lead1_balance_before = t.token.balance(&lead1);
+
+    t.client.finalize_hackathon(&hid);
+
+    let winner = t.client.get_winner_by_address(&hid, &lead1);
+    assert_eq!(winner.amount, 10_000);
+    assert!(!winner.claimed);
+
+    // Before claim window expires, reclaim should fail.
+    let early = t.client.try_reclaim_unclaimed_prizes(&hid);
+    assert!(
+        early.is_err(),
+        "reclaim before claim_deadline should be rejected"
+    );
+    assert_eq!(t.token.balance(&lead1), lead1_balance_before);
+
+    // Fast-forward past the claim deadline (default 90 days).
+    t.env
+        .ledger()
+        .set_timestamp(winner.claim_deadline + 1);
+
+    let reclaimed = t.client.reclaim_unclaimed_prizes(&hid);
+    assert_eq!(reclaimed, 10_000);
+
+    // Creator gets the prize back.
+    assert_eq!(
+        t.token.balance(&creator) - creator_balance_before,
+        10_000
+    );
+    // Winner never got anything.
+    assert_eq!(t.token.balance(&lead1), lead1_balance_before);
+
+    // After reclaim, the winner cannot claim anymore.
+    let post = t.client.try_claim_prize(&hid, &lead1);
+    assert!(post.is_err(), "claim after reclaim should fail");
+}
+
+/// Verifies that `create_and_fund_hackathon` is a behavioral alias for
+/// `create_hackathon` — same atomicity, same balance impact.
+#[test]
+fn test_create_and_fund_hackathon_alias() {
+    let t = setup();
+    let creator = t.admin.clone();
+
+    let mut prize_tiers = Vec::new(&t.env);
+    prize_tiers.push_back(10000u32);
+
+    let creator_balance_before = t.token.balance(&creator);
+
+    let hid = t.client.create_and_fund_hackathon(
+        &creator,
+        &String::from_str(&t.env, "Aliased"),
+        &String::from_str(&t.env, "QmAlias"),
+        &7_500,
+        &t.token_addr,
+        &1000,
+        &2000,
+        &3000,
+        &10,
+        &prize_tiers,
+    );
+
+    assert_eq!(hid, 1);
+    let hackathon = t.client.get_hackathon(&hid);
+    assert_eq!(hackathon.prize_pool, 7_500);
+    // Funds transferred atomically into escrow.
+    assert_eq!(
+        creator_balance_before - t.token.balance(&creator),
+        7_500
+    );
+}
+
+/// Verifies the admin-only `set_claim_window` guardrails.
+#[test]
+fn test_set_claim_window_bounds() {
+    let t = setup();
+
+    // Within bounds: 30 days.
+    t.client.set_claim_window(&(30 * 86_400));
+    assert_eq!(t.client.get_claim_window(), 30 * 86_400);
+
+    // Too short — less than 1 day rejected.
+    let too_short = t.client.try_set_claim_window(&3600);
+    assert!(too_short.is_err());
+
+    // Too long — more than 365 days rejected.
+    let too_long = t.client.try_set_claim_window(&(400 * 86_400));
+    assert!(too_long.is_err());
 }
 
 #[test]
@@ -314,11 +469,23 @@ fn test_disqualify_submission() {
     let lead2_balance_before = t.token.balance(&lead2);
     t.client.finalize_hackathon(&hid);
 
-    // lead2 should get 100% since lead1 is disqualified
-    let lead2_balance_after = t.token.balance(&lead2);
-    assert_eq!(lead2_balance_after - lead2_balance_before, 10_000);
+    // Pull model: finalize records the winner but does not transfer.
+    assert_eq!(t.token.balance(&lead2), lead2_balance_before);
 
-    // lead1 gets nothing
-    let lead1_balance = t.token.balance(&lead1);
-    assert_eq!(lead1_balance, 0);
+    // lead2 (next-best after disqualification) is the sole winner at rank 0
+    let winner = t.client.get_winner_by_address(&hid, &lead2);
+    assert_eq!(winner.rank, 0);
+    assert_eq!(winner.amount, 10_000);
+
+    // lead1 is not a winner record at all
+    let dq_lookup = t.client.try_get_winner_by_address(&hid, &lead1);
+    assert!(dq_lookup.is_err());
+
+    // lead2 claims their prize
+    let claimed = t.client.claim_prize(&hid, &lead2);
+    assert_eq!(claimed, 10_000);
+    assert_eq!(t.token.balance(&lead2) - lead2_balance_before, 10_000);
+
+    // lead1 still has nothing
+    assert_eq!(t.token.balance(&lead1), 0);
 }

@@ -48,7 +48,6 @@ pub struct VotingSession {
 #[contracttype]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CampaignStatus {
-    Draft,
     Submitted,
     Validated,
     Campaigning,
@@ -77,22 +76,37 @@ pub enum DisputeResolution {
     ApproveBacker,
 }
 
+/// Reason a community vote rejected a campaign.
+/// Replaces the old free-form String so the indexer can distinguish cases
+/// without parsing strings.
+#[contracttype]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum VoteRejectionReason {
+    /// "Reject" option received majority of votes.
+    RejectMajority,
+    /// Voting period expired before the approval threshold was reached.
+    ExpiredWithoutApproval,
+}
+
+/// On-chain milestone state.
+/// Descriptions live in the backend database — only financial state is stored here.
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct Milestone {
     pub id: u32,
-    pub description: String,
     pub pct: u32, // percentage of total (basis points: 10000 = 100%)
     pub status: CrowdfundMilestoneStatus,
     pub flagged_at: u64, // 0 = not flagged; otherwise timestamp when overdue was flagged
 }
 
+/// On-chain campaign state.
+/// Metadata (title, description, team, etc.) lives in the backend database.
+/// Only financial and access-control state is stored here.
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct Campaign {
     pub id: u64,
     pub owner: Address,
-    pub metadata_cid: String,
     pub status: CampaignStatus,
     pub funding_goal: i128,
     pub current_funding: i128,
@@ -101,8 +115,7 @@ pub struct Campaign {
     pub deadline: u64,
     pub milestone_count: u32,
     pub min_pledge: i128,
-    pub backer_count: u32,
-    pub refund_progress: u32,
+    pub backer_count: u32, // informational: total unique backers who pledged
     pub vote_session_id: Option<BytesN<32>>,
 }
 
@@ -117,8 +130,6 @@ pub enum CrowdfundDataKey {
     Campaign(u64),
     // Decomposed milestones: no Vec in Campaign struct
     CampaignMilestone(u64, u32), // campaign_id, milestone_index -> Milestone
-    // Pledge tracking
-    Pledge(u64, Address), // campaign_id, backer -> amount
-    // Backer list stored in batches of 50
-    BackerBatch(u64, u32), // campaign_id, batch_index -> Vec<Address> (max 50)
+    // Pledge tracking: amount stored per backer for dispute/refund verification
+    Pledge(u64, Address), // campaign_id, backer -> net amount pledged
 }

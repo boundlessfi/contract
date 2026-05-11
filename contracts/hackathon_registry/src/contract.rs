@@ -9,10 +9,17 @@ use boundless_types::ModuleType;
 
 use crate::error::HackathonError;
 use crate::events::{
-    HackathonCancelled, HackathonCreated, PrizesDistributed, ProjectSubmitted, ScoreRecorded,
-    SponsoredTrackAdded, TeamRegistered, TrackPrizesDistributed,
+    HackathonCancelled, HackathonCreated, HackathonFinalized, PrizeClaimed, ProjectSubmitted,
+    ScoreRecorded, SponsoredTrackAdded, TeamRegistered, TrackPrizesDistributed,
+    UnclaimedPrizesReclaimed,
 };
-use crate::storage::{Hackathon, HackathonDataKey, HackathonStatus, SponsoredTrack, Submission};
+use crate::storage::{
+    Hackathon, HackathonDataKey, HackathonStatus, SponsoredTrack, Submission, WinnerRecord,
+};
+
+/// Default claim window for unclaimed prizes if admin has not configured one:
+/// 90 days = 90 * 24 * 60 * 60 seconds.
+const DEFAULT_CLAIM_WINDOW_SECONDS: u64 = 90 * 86_400;
 
 fn sym(env: &Env, name: &str) -> Symbol {
     Symbol::new(env, name)
@@ -148,6 +155,40 @@ impl HackathonRegistry {
         HackathonCreated { id: count, creator }.publish(&env);
 
         Ok(count)
+    }
+
+    /// Alias for `create_hackathon`. Semantically identical; the name makes the
+    /// cost model explicit to integrators — calling this transfers `prize_pool`
+    /// from `creator` into escrow atomically with the hackathon creation.
+    ///
+    /// Smart-account creators are supported automatically: `creator.require_auth()`
+    /// routes to `__check_auth` on contract addresses.
+    pub fn create_and_fund_hackathon(
+        env: Env,
+        creator: Address,
+        title: String,
+        metadata_cid: String,
+        prize_pool: i128,
+        asset: Address,
+        registration_deadline: u64,
+        submission_deadline: u64,
+        judging_deadline: u64,
+        max_participants: u32,
+        prize_tiers: Vec<u32>,
+    ) -> Result<u64, HackathonError> {
+        Self::create_hackathon(
+            env,
+            creator,
+            title,
+            metadata_cid,
+            prize_pool,
+            asset,
+            registration_deadline,
+            submission_deadline,
+            judging_deadline,
+            max_participants,
+            prize_tiers,
+        )
     }
 
     // ========================================================================
@@ -424,6 +465,12 @@ impl HackathonRegistry {
     // FINALIZATION
     // ========================================================================
 
+    /// Finalize a hackathon. Records winner ranks, amounts, and reputation,
+    /// but does NOT transfer funds. Winners pull their prize via `claim_prize`
+    /// within the claim window (default 90 days). After the window expires,
+    /// the creator may sweep unclaimed amounts via `reclaim_unclaimed_prizes`.
+    ///
+    /// Permissionless: anyone can call this once `judging_deadline` has passed.
     pub fn finalize_hackathon(env: Env, hackathon_id: u64) -> Result<(), HackathonError> {
         let mut hackathon = Self::load_hackathon(&env, hackathon_id)?;
 
@@ -437,7 +484,6 @@ impl HackathonRegistry {
             return Err(HackathonError::InvalidStatus);
         }
 
-        let escrow_addr = Self::get_escrow_addr(&env)?;
         let rep_addr = Self::get_rep_addr(&env)?;
 
         let sub_count = hackathon.submission_count;
@@ -506,6 +552,9 @@ impl HackathonRegistry {
         };
 
         let contract_addr = env.current_contract_address();
+        let now = env.ledger().timestamp();
+        let claim_window = Self::get_claim_window_internal(&env);
+        let claim_deadline = now.saturating_add(claim_window);
 
         for rank in 0..num_winners {
             let lead = leads.get(rank).unwrap();
@@ -520,23 +569,26 @@ impl HackathonRegistry {
                 .checked_mul(pct as i128)
                 .ok_or(HackathonError::Overflow)?
                 / 10000;
-            if amount > 0 {
-                let release_args: Vec<Val> = Vec::from_array(
-                    &env,
-                    [
-                        hackathon.pool_id.clone().into_val(&env),
-                        lead.clone().into_val(&env),
-                        amount.into_val(&env),
-                    ],
-                );
-                env.invoke_contract::<()>(
-                    &escrow_addr,
-                    &sym(&env, "release_partial"),
-                    release_args,
-                );
-            }
 
-            // Record hackathon result in reputation
+            // Record winner (no token transfer; winners pull via claim_prize)
+            let record = WinnerRecord {
+                hackathon_id,
+                rank,
+                winner: lead.clone(),
+                amount,
+                claimed: false,
+                claimed_at: None,
+                claim_deadline,
+            };
+            let winner_key = HackathonDataKey::Winner(hackathon_id, rank);
+            env.storage().persistent().set(&winner_key, &record);
+            Self::extend_persistent_ttl(&env, &winner_key);
+
+            let by_addr_key = HackathonDataKey::WinnerByAddress(hackathon_id, lead.clone());
+            env.storage().persistent().set(&by_addr_key, &rank);
+            Self::extend_persistent_ttl(&env, &by_addr_key);
+
+            // Record hackathon result in reputation (unchanged from previous behavior)
             let is_win = rank == 0;
             let points = if rank == 0 {
                 100u32
@@ -557,14 +609,218 @@ impl HackathonRegistry {
             env.invoke_contract::<()>(&rep_addr, &sym(&env, "record_hackathon_result"), rep_args);
         }
 
+        env.storage()
+            .persistent()
+            .set(&HackathonDataKey::WinnerCount(hackathon_id), &num_winners);
+
         hackathon.status = HackathonStatus::Completed;
         env.storage()
             .persistent()
             .set(&HackathonDataKey::Hackathon(hackathon_id), &hackathon);
 
-        PrizesDistributed { hackathon_id }.publish(&env);
+        HackathonFinalized {
+            hackathon_id,
+            winner_count: num_winners,
+        }
+        .publish(&env);
 
         Ok(())
+    }
+
+    /// Winner pulls their prize from the escrow pool.
+    ///
+    /// Auth: `winner.require_auth()` — works for both classic G-addresses and
+    /// SAK smart-account contracts (via `__check_auth`).
+    ///
+    /// Idempotent: subsequent calls return `AlreadyClaimed`.
+    /// Time-bound: after `claim_deadline`, returns `ClaimWindowExpired`.
+    pub fn claim_prize(
+        env: Env,
+        hackathon_id: u64,
+        winner: Address,
+    ) -> Result<i128, HackathonError> {
+        winner.require_auth();
+
+        let hackathon = Self::load_hackathon(&env, hackathon_id)?;
+        if hackathon.status != HackathonStatus::Completed {
+            return Err(HackathonError::HackathonNotFinalized);
+        }
+
+        let rank: u32 = env
+            .storage()
+            .persistent()
+            .get(&HackathonDataKey::WinnerByAddress(
+                hackathon_id,
+                winner.clone(),
+            ))
+            .ok_or(HackathonError::NotAWinner)?;
+
+        let winner_key = HackathonDataKey::Winner(hackathon_id, rank);
+        let mut record: WinnerRecord = env
+            .storage()
+            .persistent()
+            .get(&winner_key)
+            .ok_or(HackathonError::NotAWinner)?;
+
+        if record.claimed {
+            return Err(HackathonError::AlreadyClaimed);
+        }
+        if env.ledger().timestamp() > record.claim_deadline {
+            return Err(HackathonError::ClaimWindowExpired);
+        }
+
+        // Mark claimed BEFORE the cross-contract call to prevent reentrancy.
+        let amount = record.amount;
+        record.claimed = true;
+        record.claimed_at = Some(env.ledger().timestamp());
+        env.storage().persistent().set(&winner_key, &record);
+
+        // Release from escrow (only after state is updated)
+        if amount > 0 {
+            let escrow_addr = Self::get_escrow_addr(&env)?;
+            let release_args: Vec<Val> = Vec::from_array(
+                &env,
+                [
+                    hackathon.pool_id.clone().into_val(&env),
+                    winner.clone().into_val(&env),
+                    amount.into_val(&env),
+                ],
+            );
+            env.invoke_contract::<()>(&escrow_addr, &sym(&env, "release_partial"), release_args);
+        }
+
+        PrizeClaimed {
+            hackathon_id,
+            winner,
+            rank,
+            amount,
+        }
+        .publish(&env);
+
+        Self::extend_persistent_ttl(&env, &winner_key);
+        Self::extend_instance_ttl(&env);
+
+        Ok(amount)
+    }
+
+    /// After `claim_deadline` passes on a finalized hackathon, the creator
+    /// may sweep all unclaimed winner amounts back to themselves. Idempotent —
+    /// already-claimed and already-reclaimed records are skipped.
+    pub fn reclaim_unclaimed_prizes(
+        env: Env,
+        hackathon_id: u64,
+    ) -> Result<i128, HackathonError> {
+        let hackathon = Self::load_hackathon(&env, hackathon_id)?;
+        hackathon.creator.require_auth();
+
+        if hackathon.status != HackathonStatus::Completed {
+            return Err(HackathonError::HackathonNotFinalized);
+        }
+
+        let winner_count: u32 = env
+            .storage()
+            .persistent()
+            .get(&HackathonDataKey::WinnerCount(hackathon_id))
+            .unwrap_or(0);
+
+        if winner_count == 0 {
+            return Ok(0);
+        }
+
+        let now = env.ledger().timestamp();
+        let escrow_addr = Self::get_escrow_addr(&env)?;
+        let mut total_reclaimed: i128 = 0;
+        let mut any_eligible = false;
+
+        for rank in 0..winner_count {
+            let winner_key = HackathonDataKey::Winner(hackathon_id, rank);
+            let mut record: WinnerRecord = env
+                .storage()
+                .persistent()
+                .get(&winner_key)
+                .ok_or(HackathonError::NotAWinner)?;
+
+            if record.claimed {
+                continue;
+            }
+            if now <= record.claim_deadline {
+                // Window still open for this record; not yet reclaimable.
+                continue;
+            }
+            any_eligible = true;
+
+            // Mark claimed BEFORE releasing to prevent re-reclaim/reentrancy.
+            let amount = record.amount;
+            record.claimed = true;
+            record.claimed_at = Some(now);
+            env.storage().persistent().set(&winner_key, &record);
+
+            if amount > 0 {
+                let release_args: Vec<Val> = Vec::from_array(
+                    &env,
+                    [
+                        hackathon.pool_id.clone().into_val(&env),
+                        hackathon.creator.clone().into_val(&env),
+                        amount.into_val(&env),
+                    ],
+                );
+                env.invoke_contract::<()>(
+                    &escrow_addr,
+                    &sym(&env, "release_partial"),
+                    release_args,
+                );
+                total_reclaimed = total_reclaimed
+                    .checked_add(amount)
+                    .ok_or(HackathonError::Overflow)?;
+            }
+        }
+
+        // If the caller invokes this before ANY record has expired, surface an
+        // explicit error so they don't silently get back 0.
+        if !any_eligible {
+            return Err(HackathonError::ClaimWindowNotExpired);
+        }
+
+        if total_reclaimed > 0 {
+            UnclaimedPrizesReclaimed {
+                hackathon_id,
+                total_amount: total_reclaimed,
+            }
+            .publish(&env);
+        }
+
+        Self::extend_instance_ttl(&env);
+
+        Ok(total_reclaimed)
+    }
+
+    /// Admin-only. Configure the claim window in seconds. Affects hackathons
+    /// finalized AFTER this call. Existing winner records keep their original
+    /// `claim_deadline`. Recommended values: 30-180 days.
+    pub fn set_claim_window(env: Env, window_seconds: u64) -> Result<(), HackathonError> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&HackathonDataKey::Admin)
+            .ok_or(HackathonError::NotInitialized)?;
+        admin.require_auth();
+
+        // Guardrail: must be at least 1 day, at most 1 year.
+        if window_seconds < 86_400 || window_seconds > 365 * 86_400 {
+            return Err(HackathonError::InvalidClaimWindow);
+        }
+
+        env.storage()
+            .instance()
+            .set(&HackathonDataKey::ClaimWindow, &window_seconds);
+        Self::extend_instance_ttl(&env);
+        Ok(())
+    }
+
+    /// Returns the currently configured claim window in seconds.
+    /// Falls back to `DEFAULT_CLAIM_WINDOW_SECONDS` if admin has not set one.
+    pub fn get_claim_window(env: Env) -> u64 {
+        Self::get_claim_window_internal(&env)
     }
 
     // ========================================================================
@@ -829,6 +1085,46 @@ impl HackathonRegistry {
             .ok_or(HackathonError::SubmissionNotFound)
     }
 
+    /// Look up a winner record by hackathon + rank. Returns `NotAWinner` if
+    /// no record exists at that rank.
+    pub fn get_winner(
+        env: Env,
+        hackathon_id: u64,
+        rank: u32,
+    ) -> Result<WinnerRecord, HackathonError> {
+        env.storage()
+            .persistent()
+            .get(&HackathonDataKey::Winner(hackathon_id, rank))
+            .ok_or(HackathonError::NotAWinner)
+    }
+
+    /// Look up a winner record by hackathon + address. Returns `NotAWinner` if
+    /// the address is not in the winner set.
+    pub fn get_winner_by_address(
+        env: Env,
+        hackathon_id: u64,
+        winner: Address,
+    ) -> Result<WinnerRecord, HackathonError> {
+        let rank: u32 = env
+            .storage()
+            .persistent()
+            .get(&HackathonDataKey::WinnerByAddress(hackathon_id, winner))
+            .ok_or(HackathonError::NotAWinner)?;
+        env.storage()
+            .persistent()
+            .get(&HackathonDataKey::Winner(hackathon_id, rank))
+            .ok_or(HackathonError::NotAWinner)
+    }
+
+    /// Returns the number of winners recorded for a finalized hackathon.
+    /// Returns 0 for hackathons that are not yet finalized or had no submissions.
+    pub fn get_winner_count(env: Env, hackathon_id: u64) -> u32 {
+        env.storage()
+            .persistent()
+            .get(&HackathonDataKey::WinnerCount(hackathon_id))
+            .unwrap_or(0)
+    }
+
     // ========================================================================
     // INTERNAL
     // ========================================================================
@@ -864,5 +1160,12 @@ impl HackathonRegistry {
             .instance()
             .get(&HackathonDataKey::ReputationRegistry)
             .ok_or(HackathonError::NotInitialized)
+    }
+
+    fn get_claim_window_internal(env: &Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&HackathonDataKey::ClaimWindow)
+            .unwrap_or(DEFAULT_CLAIM_WINDOW_SECONDS)
     }
 }

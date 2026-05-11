@@ -1,14 +1,14 @@
 use crate::error::CrowdfundError;
 use crate::events::{
     CampaignApproved, CampaignCancelled, CampaignCancelledByOwner, CampaignCreated, CampaignFailed,
-    CampaignFunded, CampaignRejected, CampaignSubmittedForReview, CampaignTerminated,
-    CampaignValidated, CampaignVoteRejected, DisputeResolved, MilestoneApproved, MilestoneDisputed,
-    MilestoneEscalated, MilestoneOverdue, MilestoneRejected, MilestoneRevisionRequested,
-    MilestoneSubmitted, PledgeRecorded, RefundBatchProcessed,
+    CampaignFunded, CampaignRejected, CampaignTerminated,
+    CampaignUpdated, CampaignValidated, CampaignVoteRejected, DisputeResolved, MilestoneApproved,
+    MilestoneDisputed, MilestoneEscalated, MilestoneOverdue, MilestoneRejected,
+    MilestoneRevisionRequested, MilestoneSubmitted, PledgeRecorded, RefundBatchProcessed,
 };
 use crate::storage::{
     Campaign, CampaignStatus, CrowdfundDataKey, CrowdfundMilestoneStatus, DisputeResolution,
-    Milestone, VoteContext, VoteOption, VotingSession,
+    Milestone, VoteContext, VoteOption, VoteRejectionReason, VotingSession,
 };
 use boundless_types::ttl::{
     INSTANCE_TTL_EXTEND, INSTANCE_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND, PERSISTENT_TTL_THRESHOLD,
@@ -17,8 +17,6 @@ use boundless_types::ModuleType;
 use soroban_sdk::{
     contract, contractimpl, Address, BytesN, Env, IntoVal, String, Symbol, Val, Vec,
 };
-
-const BACKER_BATCH_SIZE: u32 = 50;
 
 fn sym(env: &Env, name: &str) -> Symbol {
     Symbol::new(env, name)
@@ -133,19 +131,20 @@ impl CrowdfundRegistry {
     }
 
     // ========================================================================
-    // CAMPAIGN CREATION (starts in Draft)
+    // CAMPAIGN CREATION
+    // Campaigns start in Submitted, ready for admin review immediately.
+    // Milestone descriptions live in the backend database — only percentages
+    // (basis points, 10000 = 100%) are stored on-chain.
     // ========================================================================
 
     pub fn create_campaign(
         env: Env,
         owner: Address,
-        metadata_cid: String,
         funding_goal: i128,
         asset: Address,
         deadline: u64,
-        milestone_descs: Vec<(String, u32)>,
+        milestone_pcts: Vec<u32>,
         min_pledge: i128,
-        submit: bool,
     ) -> Result<u64, CrowdfundError> {
         owner.require_auth();
 
@@ -156,8 +155,7 @@ impl CrowdfundRegistry {
             return Err(CrowdfundError::DeadlinePassed);
         }
 
-        // Validate milestones: count 2-10, sum of pcts = 10000
-        Self::validate_milestones(&milestone_descs)?;
+        Self::validate_milestones(&milestone_pcts)?;
 
         let mut count: u64 = env
             .storage()
@@ -186,28 +184,20 @@ impl CrowdfundRegistry {
         let pool_id: BytesN<32> =
             env.invoke_contract(&escrow_addr, &sym(&env, "create_pool"), pool_args);
 
-        // Store milestones decomposed
-        Self::set_milestones(&env, count, &milestone_descs);
-
-        let mut status = CampaignStatus::Draft;
-        if submit {
-            status = CampaignStatus::Submitted;
-        }
+        Self::set_milestones(&env, count, &milestone_pcts);
 
         let campaign = Campaign {
             id: count,
             owner: owner.clone(),
-            metadata_cid,
-            status,
+            status: CampaignStatus::Submitted,
             funding_goal,
             current_funding: 0,
             asset,
             pool_id,
             deadline,
-            milestone_count: milestone_descs.len(),
+            milestone_count: milestone_pcts.len(),
             min_pledge,
             backer_count: 0,
-            refund_progress: 0,
             vote_session_id: None,
         };
 
@@ -223,21 +213,19 @@ impl CrowdfundRegistry {
         }
         .publish(&env);
 
-        if submit {
-            CampaignSubmittedForReview { id: count }.publish(&env);
-        }
-
         Ok(count)
     }
 
+    /// Update a campaign that is still in Submitted status (awaiting review).
+    /// Only financial/structural parameters are stored on-chain; metadata
+    /// updates (title, description, team, etc.) go through the backend only.
     pub fn update_campaign(
         env: Env,
         campaign_id: u64,
-        metadata_cid: String,
         funding_goal: i128,
         asset: Address,
         deadline: u64,
-        milestone_descs: Vec<(String, u32)>,
+        milestone_pcts: Vec<u32>,
         min_pledge: i128,
     ) -> Result<(), CrowdfundError> {
         let key = CrowdfundDataKey::Campaign(campaign_id);
@@ -249,8 +237,8 @@ impl CrowdfundRegistry {
 
         campaign.owner.require_auth();
 
-        if campaign.status != CampaignStatus::Draft {
-            return Err(CrowdfundError::NotDraft);
+        if campaign.status != CampaignStatus::Submitted {
+            return Err(CrowdfundError::NotSubmitted);
         }
 
         if funding_goal <= 0 {
@@ -260,20 +248,19 @@ impl CrowdfundRegistry {
             return Err(CrowdfundError::DeadlinePassed);
         }
 
-        Self::validate_milestones(&milestone_descs)?;
-        Self::set_milestones(&env, campaign_id, &milestone_descs);
+        Self::validate_milestones(&milestone_pcts)?;
+        Self::set_milestones(&env, campaign_id, &milestone_pcts);
 
-        campaign.metadata_cid = metadata_cid;
         campaign.funding_goal = funding_goal;
         campaign.asset = asset;
         campaign.deadline = deadline;
-        campaign.milestone_count = milestone_descs.len();
+        campaign.milestone_count = milestone_pcts.len();
         campaign.min_pledge = min_pledge;
 
         env.storage().persistent().set(&key, &campaign);
         Self::extend_persistent_ttl(&env, &key);
 
-        crate::events::CampaignUpdated {
+        CampaignUpdated {
             id: campaign_id,
             funding_goal,
         }
@@ -284,29 +271,8 @@ impl CrowdfundRegistry {
 
     // ========================================================================
     // GOVERNANCE: APPROVAL WORKFLOW
-    // Draft → Submitted → Validated → Campaigning
+    // Submitted → (vote session) → Campaigning
     // ========================================================================
-
-    pub fn submit_for_review(env: Env, campaign_id: u64) -> Result<(), CrowdfundError> {
-        let key = CrowdfundDataKey::Campaign(campaign_id);
-        let mut campaign: Campaign = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .ok_or(CrowdfundError::CampaignNotFound)?;
-
-        campaign.owner.require_auth();
-
-        if campaign.status != CampaignStatus::Draft {
-            return Err(CrowdfundError::NotDraft);
-        }
-
-        campaign.status = CampaignStatus::Submitted;
-        env.storage().persistent().set(&key, &campaign);
-
-        CampaignSubmittedForReview { id: campaign_id }.publish(&env);
-        Ok(())
-    }
 
     pub fn approve_campaign(
         env: Env,
@@ -365,11 +331,9 @@ impl CrowdfundRegistry {
         Ok(session_id)
     }
 
-    pub fn reject_campaign(
-        env: Env,
-        campaign_id: u64,
-        reason: String,
-    ) -> Result<(), CrowdfundError> {
+    /// Admin pre-vote rejection: cancels the campaign.
+    /// The rejection reason is recorded in the backend database, not on-chain.
+    pub fn reject_campaign(env: Env, campaign_id: u64) -> Result<(), CrowdfundError> {
         let admin = Self::require_admin(&env)?;
         admin.require_auth();
 
@@ -384,15 +348,11 @@ impl CrowdfundRegistry {
             return Err(CrowdfundError::NotSubmitted);
         }
 
-        campaign.status = CampaignStatus::Draft;
+        campaign.status = CampaignStatus::Cancelled;
         campaign.vote_session_id = None;
         env.storage().persistent().set(&key, &campaign);
 
-        CampaignRejected {
-            id: campaign_id,
-            reason,
-        }
-        .publish(&env);
+        CampaignRejected { id: campaign_id }.publish(&env);
         Ok(())
     }
 
@@ -482,12 +442,12 @@ impl CrowdfundRegistry {
                 env.storage().persistent().set(&key, &campaign);
                 CampaignValidated { id: campaign_id }.publish(&env);
             } else if reject_votes > approve_votes {
-                campaign.status = CampaignStatus::Draft;
+                campaign.status = CampaignStatus::Cancelled;
                 campaign.vote_session_id = None;
                 env.storage().persistent().set(&key, &campaign);
                 CampaignVoteRejected {
                     id: campaign_id,
-                    reason: String::from_str(&env, "reject_majority"),
+                    reason: VoteRejectionReason::RejectMajority,
                 }
                 .publish(&env);
             } else {
@@ -505,13 +465,13 @@ impl CrowdfundRegistry {
                 return Err(CrowdfundError::VoteThresholdNotMet);
             }
 
-            // Voting expired without reaching threshold — reject
-            campaign.status = CampaignStatus::Draft;
+            // Voting expired without reaching threshold — cancel
+            campaign.status = CampaignStatus::Cancelled;
             campaign.vote_session_id = None;
             env.storage().persistent().set(&key, &campaign);
             CampaignVoteRejected {
                 id: campaign_id,
-                reason: String::from_str(&env, "expired_without_approval"),
+                reason: VoteRejectionReason::ExpiredWithoutApproval,
             }
             .publish(&env);
         }
@@ -566,23 +526,14 @@ impl CrowdfundRegistry {
             .checked_add(net)
             .ok_or(CrowdfundError::Overflow)?;
 
-        // Track backer pledge amount
+        // Track backer pledge amount for refund verification.
+        // backer_count is incremented only for new backers (informational stat).
         let pledge_key = CrowdfundDataKey::Pledge(campaign_id, backer.clone());
         let existing: i128 = env.storage().persistent().get(&pledge_key).unwrap_or(0);
         let new_pledge = existing.checked_add(net).ok_or(CrowdfundError::Overflow)?;
         env.storage().persistent().set(&pledge_key, &new_pledge);
 
-        // Add backer to batch list (if new)
         if existing == 0 {
-            let batch_idx = campaign.backer_count / BACKER_BATCH_SIZE;
-            let batch_key = CrowdfundDataKey::BackerBatch(campaign_id, batch_idx);
-            let mut batch: Vec<Address> = env
-                .storage()
-                .persistent()
-                .get(&batch_key)
-                .unwrap_or(Vec::new(&env));
-            batch.push_back(backer.clone());
-            env.storage().persistent().set(&batch_key, &batch);
             campaign.backer_count += 1;
         }
 
@@ -848,16 +799,29 @@ impl CrowdfundRegistry {
         }
 
         campaign.status = CampaignStatus::Failed;
-        campaign.refund_progress = 0;
         env.storage().persistent().set(&key, &campaign);
 
         CampaignFailed { id: campaign_id }.publish(&env);
         Ok(())
     }
 
-    pub fn process_refund_batch(env: Env, campaign_id: u64) -> Result<(), CrowdfundError> {
+    /// Process a batch of refunds for a Failed or Cancelled campaign.
+    ///
+    /// The backend provides the list of backers to refund in this call.
+    /// The contract verifies each backer's stored pledge amount (ignoring
+    /// the hint amount from the caller) to prevent over-refunding, then
+    /// zeroes the pledge to prevent double-refunds.
+    ///
+    /// The backend is responsible for batch pagination and tracking which
+    /// backers have already been processed. This function is permissionless —
+    /// any caller may submit a batch.
+    pub fn process_refund_batch(
+        env: Env,
+        campaign_id: u64,
+        backers: Vec<(Address, i128)>,
+    ) -> Result<(), CrowdfundError> {
         let key = CrowdfundDataKey::Campaign(campaign_id);
-        let mut campaign: Campaign = env
+        let campaign: Campaign = env
             .storage()
             .persistent()
             .get(&key)
@@ -868,35 +832,24 @@ impl CrowdfundRegistry {
             return Err(CrowdfundError::InvalidState);
         }
 
-        let batch_idx = campaign.refund_progress;
-        let total_batches = campaign.backer_count.div_ceil(BACKER_BATCH_SIZE);
-        if batch_idx >= total_batches {
-            return Err(CrowdfundError::RefundBatchDone);
-        }
-
-        let batch_key = CrowdfundDataKey::BackerBatch(campaign_id, batch_idx);
-        let batch: Vec<Address> = env
-            .storage()
-            .persistent()
-            .get(&batch_key)
-            .unwrap_or(Vec::new(&env));
-
-        // Build refund list
+        let escrow_addr = Self::get_escrow_addr(&env);
         let mut refund_list: Vec<(Address, i128)> = Vec::new(&env);
         let mut count = 0u32;
 
-        for backer in batch.iter() {
+        for (backer, _hint) in backers.iter() {
             let pledge_key = CrowdfundDataKey::Pledge(campaign_id, backer.clone());
-            let amount: i128 = env.storage().persistent().get(&pledge_key).unwrap_or(0);
-            if amount > 0 {
-                refund_list.push_back((backer.clone(), amount));
+            // Use the stored amount, not the hint supplied by the backend.
+            // This is the authoritative figure and guards against manipulation.
+            let stored_amount: i128 = env.storage().persistent().get(&pledge_key).unwrap_or(0);
+            if stored_amount > 0 {
+                refund_list.push_back((backer.clone(), stored_amount));
+                // Zero out immediately to prevent double-refund.
                 env.storage().persistent().set(&pledge_key, &0i128);
                 count += 1;
             }
         }
 
         if !refund_list.is_empty() {
-            let escrow_addr = Self::get_escrow_addr(&env);
             let refund_args: Vec<Val> = Vec::from_array(
                 &env,
                 [
@@ -907,15 +860,7 @@ impl CrowdfundRegistry {
             env.invoke_contract::<()>(&escrow_addr, &sym(&env, "refund_backers"), refund_args);
         }
 
-        campaign.refund_progress = batch_idx + 1;
-        env.storage().persistent().set(&key, &campaign);
-
-        RefundBatchProcessed {
-            campaign_id,
-            batch_index: batch_idx,
-            count,
-        }
-        .publish(&env);
+        RefundBatchProcessed { campaign_id, count }.publish(&env);
 
         Ok(())
     }
@@ -940,7 +885,6 @@ impl CrowdfundRegistry {
         }
 
         campaign.status = CampaignStatus::Cancelled;
-        campaign.refund_progress = 0;
         env.storage().persistent().set(&key, &campaign);
 
         CampaignCancelled { id: campaign_id }.publish(&env);
@@ -958,15 +902,13 @@ impl CrowdfundRegistry {
         campaign.owner.require_auth();
 
         // Only allowed before funding completes
-        if campaign.status != CampaignStatus::Draft
-            && campaign.status != CampaignStatus::Submitted
+        if campaign.status != CampaignStatus::Submitted
             && campaign.status != CampaignStatus::Campaigning
         {
             return Err(CrowdfundError::InvalidState);
         }
 
         campaign.status = CampaignStatus::Cancelled;
-        campaign.refund_progress = 0;
         campaign.vote_session_id = None;
         env.storage().persistent().set(&key, &campaign);
 
@@ -1100,7 +1042,6 @@ impl CrowdfundRegistry {
                 env.storage().persistent().set(&ms_key, &ms);
 
                 campaign.status = CampaignStatus::Cancelled;
-                campaign.refund_progress = 0;
                 env.storage().persistent().set(&key, &campaign);
             }
         }
@@ -1135,7 +1076,6 @@ impl CrowdfundRegistry {
         }
 
         campaign.status = CampaignStatus::Cancelled;
-        campaign.refund_progress = 0;
         env.storage().persistent().set(&key, &campaign);
 
         CampaignTerminated { id: campaign_id }.publish(&env);
@@ -1237,7 +1177,6 @@ impl CrowdfundRegistry {
         env.storage().persistent().set(&ms_key, &ms);
 
         campaign.status = CampaignStatus::Cancelled;
-        campaign.refund_progress = 0;
         env.storage().persistent().set(&key, &campaign);
 
         MilestoneEscalated {
@@ -1305,14 +1244,17 @@ impl CrowdfundRegistry {
             .expect("not initialized")
     }
 
-    fn validate_milestones(milestone_descs: &Vec<(String, u32)>) -> Result<(), CrowdfundError> {
-        let ms_count = milestone_descs.len();
+    /// Validate milestone percentage list:
+    /// - count must be 2–10
+    /// - sum must equal exactly 10000 (basis points)
+    fn validate_milestones(milestone_pcts: &Vec<u32>) -> Result<(), CrowdfundError> {
+        let ms_count = milestone_pcts.len();
         if !(2..=10).contains(&ms_count) {
             return Err(CrowdfundError::InvalidMilestones);
         }
         let mut pct_sum: u32 = 0;
         for i in 0..ms_count {
-            let (_, pct) = milestone_descs.get(i).unwrap();
+            let pct = milestone_pcts.get(i).unwrap();
             pct_sum += pct;
         }
         if pct_sum != 10000 {
@@ -1321,12 +1263,14 @@ impl CrowdfundRegistry {
         Ok(())
     }
 
-    fn set_milestones(env: &Env, campaign_id: u64, milestone_descs: &Vec<(String, u32)>) {
-        for i in 0..milestone_descs.len() {
-            let (desc, pct) = milestone_descs.get(i).unwrap();
+    /// Persist milestone state entries for a campaign.
+    /// Only the percentage and initial Pending status are stored;
+    /// descriptions live in the backend database.
+    fn set_milestones(env: &Env, campaign_id: u64, milestone_pcts: &Vec<u32>) {
+        for i in 0..milestone_pcts.len() {
+            let pct = milestone_pcts.get(i).unwrap();
             let milestone = Milestone {
                 id: i,
-                description: desc,
                 pct,
                 status: CrowdfundMilestoneStatus::Pending,
                 flagged_at: 0,

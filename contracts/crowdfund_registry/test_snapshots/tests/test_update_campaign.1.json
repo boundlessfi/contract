@@ -208,9 +208,6 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
                 },
                 {
-                  "string": "Draft"
-                },
-                {
                   "i128": "10000"
                 },
                 {
@@ -222,32 +219,15 @@
                 {
                   "vec": [
                     {
-                      "vec": [
-                        {
-                          "string": "MVP"
-                        },
-                        {
-                          "u32": 5000
-                        }
-                      ]
+                      "u32": 5000
                     },
                     {
-                      "vec": [
-                        {
-                          "string": "Beta"
-                        },
-                        {
-                          "u32": 5000
-                        }
-                      ]
+                      "u32": 5000
                     }
                   ]
                 },
                 {
                   "i128": "100"
-                },
-                {
-                  "bool": false
                 }
               ]
             }
@@ -306,9 +286,6 @@
                   "u64": "1"
                 },
                 {
-                  "string": "Updated"
-                },
-                {
                   "i128": "20000"
                 },
                 {
@@ -320,24 +297,10 @@
                 {
                   "vec": [
                     {
-                      "vec": [
-                        {
-                          "string": "Phase 1"
-                        },
-                        {
-                          "u32": 5000
-                        }
-                      ]
+                      "u32": 5000
                     },
                     {
-                      "vec": [
-                        {
-                          "string": "Phase 2"
-                        },
-                        {
-                          "u32": 5000
-                        }
-                      ]
+                      "u32": 5000
                     }
                   ]
                 },
@@ -1048,14 +1011,6 @@
                   },
                   {
                     "key": {
-                      "symbol": "metadata_cid"
-                    },
-                    "val": {
-                      "string": "Updated"
-                    }
-                  },
-                  {
-                    "key": {
                       "symbol": "milestone_count"
                     },
                     "val": {
@@ -1088,20 +1043,12 @@
                   },
                   {
                     "key": {
-                      "symbol": "refund_progress"
-                    },
-                    "val": {
-                      "u32": 0
-                    }
-                  },
-                  {
-                    "key": {
                       "symbol": "status"
                     },
                     "val": {
                       "vec": [
                         {
-                          "symbol": "Draft"
+                          "symbol": "Submitted"
                         }
                       ]
                     }
@@ -1143,14 +1090,6 @@
               "durability": "persistent",
               "val": {
                 "map": [
-                  {
-                    "key": {
-                      "symbol": "description"
-                    },
-                    "val": {
-                      "string": "Phase 1"
-                    }
-                  },
                   {
                     "key": {
                       "symbol": "flagged_at"
@@ -1218,14 +1157,6 @@
               "durability": "persistent",
               "val": {
                 "map": [
-                  {
-                    "key": {
-                      "symbol": "description"
-                    },
-                    "val": {
-                      "string": "Phase 2"
-                    }
-                  },
                   {
                     "key": {
                       "symbol": "flagged_at"

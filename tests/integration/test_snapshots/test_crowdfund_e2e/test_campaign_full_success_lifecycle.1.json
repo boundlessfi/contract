@@ -483,9 +483,6 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA2ZMN"
                 },
                 {
-                  "string": "Build a DAO tool"
-                },
-                {
                   "i128": "5000"
                 },
                 {
@@ -497,32 +494,15 @@
                 {
                   "vec": [
                     {
-                      "vec": [
-                        {
-                          "string": "MVP"
-                        },
-                        {
-                          "u32": 5000
-                        }
-                      ]
+                      "u32": 5000
                     },
                     {
-                      "vec": [
-                        {
-                          "string": "Beta"
-                        },
-                        {
-                          "u32": 5000
-                        }
-                      ]
+                      "u32": 5000
                     }
                   ]
                 },
                 {
                   "i128": "100"
-                },
-                {
-                  "bool": false
                 }
               ]
             }
@@ -2823,43 +2803,6 @@
               "key": {
                 "vec": [
                   {
-                    "symbol": "BackerBatch"
-                  },
-                  {
-                    "u64": "1"
-                  },
-                  {
-                    "u32": 0
-                  }
-                ]
-              },
-              "durability": "persistent",
-              "val": {
-                "vec": [
-                  {
-                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA4BV5"
-                  },
-                  {
-                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA6J5N"
-                  }
-                ]
-              }
-            }
-          },
-          "ext": "v0"
-        },
-        "live_until": 4095
-      },
-      {
-        "entry": {
-          "last_modified_ledger_seq": 0,
-          "data": {
-            "contract_data": {
-              "ext": "v0",
-              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVAX5",
-              "key": {
-                "vec": [
-                  {
                     "symbol": "Campaign"
                   },
                   {
@@ -2920,14 +2863,6 @@
                   },
                   {
                     "key": {
-                      "symbol": "metadata_cid"
-                    },
-                    "val": {
-                      "string": "Build a DAO tool"
-                    }
-                  },
-                  {
-                    "key": {
                       "symbol": "milestone_count"
                     },
                     "val": {
@@ -2956,14 +2891,6 @@
                     },
                     "val": {
                       "bytes": "f83f60940c1ec44c0f1e90f694c6cae7c99b4b6d1507d60ad5a3282a7750d0ee"
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "refund_progress"
-                    },
-                    "val": {
-                      "u32": 0
                     }
                   },
                   {
@@ -3017,14 +2944,6 @@
               "durability": "persistent",
               "val": {
                 "map": [
-                  {
-                    "key": {
-                      "symbol": "description"
-                    },
-                    "val": {
-                      "string": "MVP"
-                    }
-                  },
                   {
                     "key": {
                       "symbol": "flagged_at"
@@ -3092,14 +3011,6 @@
               "durability": "persistent",
               "val": {
                 "map": [
-                  {
-                    "key": {
-                      "symbol": "description"
-                    },
-                    "val": {
-                      "string": "Beta"
-                    }
-                  },
                   {
                     "key": {
                       "symbol": "flagged_at"
